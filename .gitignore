@@ -1,0 +1,25 @@
+node_modules/
+dist/
+
+# SQLite memory files (agent engrams are runtime state, not source code)
+*.engram
+*.engram-wal
+*.engram-shm
+
+# SQLite temp files
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# Environment
+.env
+.env.*
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
