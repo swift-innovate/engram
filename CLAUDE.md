@@ -115,6 +115,8 @@ Agent memory files use the `.engram` extension (they're SQLite files):
 | nomic-embed-text | Embedding model via Ollama | Yes (for retain + recall) |
 | llama3.1:8b | Fast model for extraction + reflection | Recommended |
 
+**Herd alternative:** swift-innovate/herd exposes the same Ollama HTTP API on port `40114`. Use `ollamaUrl: 'http://localhost:40114'` to point Engram at Herd instead.
+
 ## File Structure
 
 ```

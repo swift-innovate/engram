@@ -101,6 +101,63 @@ describe('retain()', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Deduplication
+// ---------------------------------------------------------------------------
+
+describe('retain() — deduplication', () => {
+  let db: Database.Database;
+  const embedder = new MockEmbedder();
+
+  beforeEach(() => { db = createTestDb(); });
+  afterEach(() => db.close());
+
+  it('exact dedup: retaining identical text returns existing chunk', async () => {
+    const r1 = await retain(db, 'Tom prefers Terraform', embedder);
+    const r2 = await retain(db, 'Tom prefers Terraform', embedder);
+
+    expect(r2.chunkId).toBe(r1.chunkId);
+    expect(r2.deduplicated).toBe(true);
+
+    const count = db.prepare('SELECT count(*) as n FROM chunks').get() as { n: number };
+    expect(count.n).toBe(1);
+  });
+
+  it('exact dedup: reinforces trust score with the higher value', async () => {
+    const r1 = await retain(db, 'Tom prefers Terraform', embedder, { trustScore: 0.5 });
+    await retain(db, 'Tom prefers Terraform', embedder, { trustScore: 0.9 });
+
+    const chunk = db.prepare('SELECT trust_score FROM chunks WHERE id = ?').get(r1.chunkId) as any;
+    expect(chunk.trust_score).toBe(0.9);
+  });
+
+  it('dedupMode none: always creates new chunks', async () => {
+    await retain(db, 'Tom prefers Terraform', embedder, { dedupMode: 'none' });
+    const r2 = await retain(db, 'Tom prefers Terraform', embedder, { dedupMode: 'none' });
+
+    expect(r2.deduplicated).toBeUndefined();
+    const count = db.prepare('SELECT count(*) as n FROM chunks').get() as { n: number };
+    expect(count.n).toBe(2);
+  });
+
+  it('dedupMode normalized: deduplicates despite case/whitespace differences', async () => {
+    const r1 = await retain(db, 'Tom prefers Terraform', embedder, { dedupMode: 'normalized' });
+    const r2 = await retain(db, '  tom prefers terraform  ', embedder, { dedupMode: 'normalized' });
+
+    expect(r2.chunkId).toBe(r1.chunkId);
+    expect(r2.deduplicated).toBe(true);
+  });
+
+  it('exact dedup: different text creates new chunk', async () => {
+    const r1 = await retain(db, 'Tom prefers Terraform', embedder);
+    const r2 = await retain(db, 'Tom prefers Pulumi', embedder);
+
+    expect(r1.chunkId).not.toBe(r2.chunkId);
+    const count = db.prepare('SELECT count(*) as n FROM chunks').get() as { n: number };
+    expect(count.n).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // retainBatch()
 // ---------------------------------------------------------------------------
 

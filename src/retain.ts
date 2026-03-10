@@ -40,11 +40,14 @@ export interface RetainOptions {
   temporalLabel?: string;
   /** Skip entity extraction queue (for bulk imports) */
   skipExtraction?: boolean;
+  /** Dedup mode: 'exact' (default) skips if identical text exists, 'normalized' ignores case/whitespace, 'none' always creates new chunk */
+  dedupMode?: 'exact' | 'normalized' | 'none';
 }
 
 export interface RetainResult {
   chunkId: string;
   queued: boolean;
+  deduplicated?: boolean;
 }
 
 export interface EmbeddingProvider {
@@ -90,6 +93,14 @@ export class OllamaEmbeddings implements EmbeddingProvider {
 }
 
 // =============================================================================
+// Dedup Helper
+// =============================================================================
+
+function normalizeForDedup(text: string): string {
+  return text.toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+// =============================================================================
 // Fast Retain (no LLM, just embed + store)
 // =============================================================================
 
@@ -110,7 +121,28 @@ export async function retain(
     eventTimeEnd = null,
     temporalLabel = null,
     skipExtraction = false,
+    dedupMode = 'exact',
   } = options;
+
+  // Dedup check — runs before embed to avoid unnecessary Ollama calls
+  if (dedupMode !== 'none') {
+    const existing = (dedupMode === 'normalized'
+      ? db.prepare(
+          `SELECT id, trust_score FROM chunks WHERE is_active = TRUE AND LOWER(TRIM(text)) = ? LIMIT 1`
+        ).get(normalizeForDedup(text))
+      : db.prepare(
+          `SELECT id, trust_score FROM chunks WHERE is_active = TRUE AND text = ? LIMIT 1`
+        ).get(text)
+    ) as { id: string; trust_score: number } | undefined;
+
+    if (existing) {
+      const newTrust = Math.max(existing.trust_score, trustScore);
+      db.prepare(
+        `UPDATE chunks SET trust_score = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`
+      ).run(newTrust, existing.id);
+      return { chunkId: existing.id, queued: false, deduplicated: true };
+    }
+  }
 
   const chunkId = `chk-${randomUUID().substring(0, 12)}`;
 
@@ -401,4 +433,81 @@ export async function processExtractionQueue(
   }
 
   return { processed, failed };
+}
+
+// =============================================================================
+// Retain Gate — Lightweight Conversation Screening
+// =============================================================================
+
+/**
+ * Lightweight heuristic to determine if text is worth retaining.
+ * No LLM call — pure pattern matching. Returns a score 0.0–1.0
+ * where higher = more worth retaining.
+ *
+ * Intended use: agent's pre-retain filter. Score below threshold → skip.
+ * Recommended threshold: 0.3.
+ *
+ * Returns { score, reason } so callers can log the decision.
+ */
+export function shouldRetain(text: string): { score: number; reason: string } {
+  let score = 0.5;
+  const reasons: string[] = [];
+  const lower = text.toLowerCase().trim();
+  const words = text.split(/\s+/);
+
+  // --- Length ---
+  if (text.length < 20) {
+    score -= 0.3;
+    reasons.push('very short');
+  } else if (text.length > 200) {
+    score += 0.1;
+    reasons.push('substantive length');
+  }
+
+  // --- Social/phatic patterns ---
+  if (/^(hey|hi|hello|thanks|thank you|ok|okay|sure|got it|sounds good|cool|nice|great|awesome|yep|yes|no|nope|bye|goodbye|lol|haha)[\s!.,?]*$/i.test(lower)) {
+    score -= 0.4;
+    reasons.push('phatic expression');
+  }
+
+  // --- Decision language ---
+  if (/\b(decided|chose|choosing|will use|switched to|prefer|prefers|going with|selected|picked|agreed|committed)\b/i.test(text)) {
+    score += 0.2;
+    reasons.push('decision language');
+  }
+
+  // --- Technical terms (camelCase, paths, mixed alphanumeric) ---
+  if (/\b[a-z]+[A-Z][a-zA-Z]*\b|\b\w+[./\\]\w+\b|\b(?:[a-z]+\d+|\d+[a-z]+)[a-z0-9]*\b/i.test(text)) {
+    score += 0.1;
+    reasons.push('technical terms');
+  }
+
+  // --- Temporal markers ---
+  if (/\b(yesterday|today|tomorrow|next week|last week|deadline|by [A-Z][a-z]+|january|february|march|april|may|june|july|august|september|october|november|december|\b\d{4}\b|\d{1,2}[\/\-]\d{1,2})\b/i.test(text)) {
+    score += 0.1;
+    reasons.push('temporal markers');
+  }
+
+  // --- Pure interrogative (question with no embedded facts) ---
+  if (/^(what|who|where|when|why|how|which|can|could|would|will|should|is|are|do|does|did)\b.+\?$/i.test(lower)) {
+    score -= 0.2;
+    reasons.push('pure interrogative');
+  }
+
+  // --- Proper nouns (capitalized mid-sentence words) ---
+  let properNounCount = 0;
+  for (let i = 1; i < words.length; i++) {
+    if (/^[A-Z][a-z]{1,}/.test(words[i])) properNounCount++;
+  }
+  if (properNounCount >= 2) {
+    score += 0.1;
+    reasons.push('proper nouns');
+  }
+
+  score = Math.max(0, Math.min(1, score));
+
+  return {
+    score,
+    reason: reasons.length > 0 ? reasons.join(', ') : 'no significant signals',
+  };
 }

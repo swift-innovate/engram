@@ -160,4 +160,68 @@ describe('Engram', () => {
     await expect(engram.retain('test', {})).rejects.toThrow();
     engram = undefined; // prevent afterEach from calling close() again
   });
+
+  // ---- forget / supersede / forgetBySource ----
+
+  it('forget() soft-deletes a chunk — excluded from recall', async () => {
+    dbPath = tmpDbPath();
+    engram = await Engram.create(dbPath, { embedder: new MockEmbedder() });
+
+    const r = await engram.retain('Tom prefers Terraform for homelab', {
+      memoryType: 'world', trustScore: 0.9,
+    });
+
+    const forgotten = await engram.forget(r.chunkId);
+    expect(forgotten).toBe(true);
+
+    // Should not appear in recall
+    const response = await engram.recall('Terraform homelab', { strategies: ['keyword'] });
+    expect(response.results.some(res => res.id === r.chunkId)).toBe(false);
+  });
+
+  it('forget() returns false for a non-existent chunk ID', async () => {
+    dbPath = tmpDbPath();
+    engram = await Engram.create(dbPath, { embedder: new MockEmbedder() });
+
+    const forgotten = await engram.forget('chk-doesnotexist');
+    expect(forgotten).toBe(false);
+  });
+
+  it('supersede() replaces old fact with new text, old chunk inactive', async () => {
+    dbPath = tmpDbPath();
+    engram = await Engram.create(dbPath, { embedder: new MockEmbedder() });
+
+    const old = await engram.retain('Tom prefers Terraform', { memoryType: 'world', trustScore: 0.9 });
+    const newResult = await engram.supersede(old.chunkId, 'Tom switched to Pulumi', {
+      memoryType: 'world', trustScore: 0.9,
+    });
+
+    expect(newResult.chunkId).not.toBe(old.chunkId);
+
+    // New chunk is findable; old chunk (is_active=FALSE) does not appear
+    const pulumi = await engram.recall('Pulumi', { strategies: ['keyword'] });
+    expect(pulumi.results.some(r => r.id === newResult.chunkId)).toBe(true);
+
+    // Old chunk is excluded even when searching for its exact content
+    const terraform = await engram.recall('Terraform', { strategies: ['keyword'] });
+    expect(terraform.results.some(r => r.id === old.chunkId)).toBe(false);
+  });
+
+  it('forgetBySource() deactivates all matching chunks', async () => {
+    dbPath = tmpDbPath();
+    engram = await Engram.create(dbPath, { embedder: new MockEmbedder() });
+
+    // Three chunks from the same session, one from a different source
+    await engram.retain('fact one from session A', { source: 'session:aaa' });
+    await engram.retain('fact two from session A', { source: 'session:aaa' });
+    await engram.retain('fact from session B', { source: 'session:bbb' });
+
+    const count = await engram.forgetBySource('session:aaa');
+    expect(count).toBe(2);
+
+    // Session B chunk should still appear in recall
+    const response = await engram.recall('session', { strategies: ['keyword'] });
+    expect(response.results.some(r => r.source?.includes('bbb'))).toBe(true);
+    expect(response.results.some(r => r.source?.includes('aaa'))).toBe(false);
+  });
 });

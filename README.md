@@ -64,6 +64,16 @@ ollama pull nomic-embed-text   # embedding model (retain + recall)
 ollama pull llama3.1:8b        # extraction + reflection
 ```
 
+If you run models via **Herd** (swift-innovate/herd), use port `40114` instead of Ollama's default:
+
+```typescript
+const mira = await Engram.create('./mira.engram', {
+  ollamaUrl: 'http://localhost:40114',  // Herd
+});
+```
+
+Herd exposes the same Ollama HTTP API (`/api/embed`, `/api/generate`), so no other changes are needed.
+
 ## Quick Start
 
 ```bash

@@ -31,12 +31,13 @@ import {
   retainBatch,
   processExtractionQueue,
   OllamaEmbeddings,
+  shouldRetain,
   type RetainOptions,
   type RetainResult,
   type EmbeddingProvider,
 } from './retain.js';
 
-import { recall, type RecallOptions, type RecallResponse, type RecallResult } from './recall.js';
+import { recall, formatForPrompt, type RecallOptions, type RecallResponse, type RecallResult, type FormatForPromptOptions } from './recall.js';
 
 import {
   reflect,
@@ -62,8 +63,9 @@ export type {
   RecallResult,
   ReflectConfig,
   ReflectResult,
+  FormatForPromptOptions,
 };
-export { OllamaEmbeddings, ReflectScheduler };
+export { OllamaEmbeddings, ReflectScheduler, shouldRetain, formatForPrompt };
 
 export interface EngramOptions {
   /** Mission for the reflection engine: what to focus on during synthesis */
@@ -240,5 +242,46 @@ export class Engram {
   /** Close the database connection. Call when the agent shuts down. */
   close(): void {
     this.db.close();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Memory lifecycle — forget / supersede
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Soft-delete a memory chunk. Sets is_active = FALSE.
+   * The chunk remains in the database for audit but is excluded from recall.
+   * Returns true if the chunk was found and deactivated.
+   */
+  async forget(chunkId: string): Promise<boolean> {
+    const result = this.db.prepare(
+      `UPDATE chunks SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND is_active = TRUE`
+    ).run(chunkId);
+    return result.changes > 0;
+  }
+
+  /**
+   * Supersede an old fact with new text. The old chunk is soft-deleted and
+   * linked to the new one via superseded_by. Use when correcting information:
+   * supersede("Tom prefers Terraform" → "Tom switched to Pulumi").
+   */
+  async supersede(oldChunkId: string, newText: string, options?: RetainOptions): Promise<RetainResult> {
+    const newResult = await this.retain(newText, options);
+    this.db.prepare(
+      `UPDATE chunks SET is_active = FALSE, superseded_by = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`
+    ).run(newResult.chunkId, oldChunkId);
+    return newResult;
+  }
+
+  /**
+   * Soft-delete all chunks whose source contains the given pattern.
+   * Returns the count of deactivated chunks.
+   * Useful for clearing out an entire conversation or document import.
+   */
+  async forgetBySource(sourcePattern: string): Promise<number> {
+    const result = this.db.prepare(
+      `UPDATE chunks SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP WHERE source LIKE ? AND is_active = TRUE`
+    ).run(`%${sourcePattern}%`);
+    return result.changes;
   }
 }

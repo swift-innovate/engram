@@ -142,6 +142,51 @@ export const ENGRAM_TOOLS = [
       },
     },
   },
+
+  {
+    name: 'engram_forget' as const,
+    description: 'Soft-delete a memory chunk. The chunk is excluded from recall but remains in the database for audit.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        chunkId: {
+          type: 'string',
+          description: 'The chunk ID to deactivate (returned by engram_retain)',
+        },
+      },
+      required: ['chunkId'],
+    },
+  },
+
+  {
+    name: 'engram_supersede' as const,
+    description: 'Replace an outdated fact with new text. The old chunk is soft-deleted and linked to the new one. Use when correcting information.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        oldChunkId: {
+          type: 'string',
+          description: 'The chunk ID of the fact being replaced',
+        },
+        newText: {
+          type: 'string',
+          description: 'The updated fact text',
+        },
+        memoryType: {
+          type: 'string',
+          enum: ['world', 'experience', 'observation', 'opinion'],
+        },
+        source: { type: 'string' },
+        context: { type: 'string' },
+        sourceType: {
+          type: 'string',
+          enum: ['user_stated', 'inferred', 'external_doc', 'tool_result', 'agent_generated'],
+        },
+        trustScore: { type: 'number', minimum: 0, maximum: 1 },
+      },
+      required: ['oldChunkId', 'newText'],
+    },
+  },
 ] as const;
 
 export type EngramToolName = typeof ENGRAM_TOOLS[number]['name'];
@@ -195,6 +240,18 @@ export function createEngramToolHandler(engram: Engram) {
         case 'engram_process_extractions': {
           const batchSize = typeof input.batchSize === 'number' ? input.batchSize : 10;
           const result = await engram.processExtractions(batchSize);
+          return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+        }
+
+        case 'engram_forget': {
+          const chunkId = input.chunkId as string;
+          const forgotten = await engram.forget(chunkId);
+          return { content: [{ type: 'text', text: JSON.stringify({ forgotten }) }] };
+        }
+
+        case 'engram_supersede': {
+          const { oldChunkId, newText, ...opts } = input as unknown as { oldChunkId: string; newText: string } & RetainOptions;
+          const result = await engram.supersede(oldChunkId, newText, opts);
           return { content: [{ type: 'text', text: JSON.stringify(result) }] };
         }
       }
