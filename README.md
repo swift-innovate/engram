@@ -109,11 +109,17 @@ Create a new engram file at the given path. Initializes the schema and applies c
 
 ```typescript
 const mira = await Engram.create('./mira.engram', {
-  ollamaUrl: 'http://localhost:11434',       // Ollama base URL
-  reflectMission: string,                    // guides what to synthesize during reflection
-  retainMission: string,                     // guides what to prioritize during retention
-  embedModel?: string,                       // default: 'nomic-embed-text'
-  reflectModel?: string,                     // default: 'llama3.1:8b'
+  ollamaUrl?: string,           // Ollama base URL (default: 'http://localhost:11434')
+  reflectMission?: string,      // guides what to synthesize during reflection
+  retainMission?: string,       // guides what to prioritize during retention
+  embedModel?: string,          // default: 'nomic-embed-text'
+  embedDimensions?: number,     // default: 768
+  reflectModel?: string,        // default: 'llama3.1:8b'
+  disposition?: {               // behavioral tuning for reflection
+    skepticism?: number,        // 0–1
+    literalism?: number,        // 0–1
+    empathy?: number,           // 0–1
+  },
 });
 ```
 
@@ -131,11 +137,12 @@ Store a memory. Embeds the text and writes to SQLite in ~5ms. Entity extraction 
 
 ```typescript
 await mira.retain('Tom prefers Terraform with the bpg provider for Proxmox IaC', {
-  memoryType: 'world',             // 'world' | 'experience' | 'observation' | 'opinion'
-  source?: string,                  // e.g. 'conversation:session-123'
-  sourceType?: string,              // 'user_stated' | 'inferred' | 'external_doc' | 'tool_result' | 'agent_generated'
-  trustScore?: number,              // 0.0–1.0, default: 0.7
-  context?: string,                 // freeform context tag
+  memoryType?: string,    // 'world' | 'experience' | 'observation' | 'opinion' (default: 'world')
+  source?: string,        // e.g. 'conversation:session-123'
+  sourceType?: string,    // 'user_stated' | 'inferred' | 'external_doc' | 'tool_result' | 'agent_generated'
+  trustScore?: number,    // 0.0–1.0 (default: 0.7)
+  context?: string,       // freeform context tag (e.g. 'infrastructure', 'project:valor')
+  dedupMode?: string,     // 'exact' | 'normalized' | 'none' (default: 'normalized')
 });
 ```
 
@@ -145,32 +152,97 @@ await mira.retain('Tom prefers Terraform with the bpg provider for Proxmox IaC',
 - `observation` — consolidated knowledge: patterns across facts (typically written by `reflect`)
 - `opinion` — belief with confidence: strengthens or weakens with evidence
 
+**Deduplication:** By default (`normalized`), text that is identical after case-folding and whitespace normalization is not stored twice — the existing chunk's trust score is reinforced instead. Set `dedupMode: 'none'` to disable.
+
+### `retainBatch(items, onProgress?)`
+
+Bulk store. More efficient than calling `retain()` in a loop — all entity extractions are queued at the end rather than one-by-one.
+
+```typescript
+const results = await mira.retainBatch([
+  { text: 'Tom prefers Terraform', options: { memoryType: 'world', trustScore: 0.9 } },
+  { text: 'Vault stores PKI certs', options: { memoryType: 'world' } },
+], (current, total) => console.log(`${current}/${total}`));
+```
+
 ### `recall(query, options?)`
 
 Retrieve memories using four parallel strategies: semantic (vector similarity via sqlite-vec), keyword (FTS5 BM25), graph (entity walk), and temporal (date filter). Results are fused using Reciprocal Rank Fusion and weighted by trust score.
 
 ```typescript
 const response = await mira.recall('What IaC tools does Tom use?', {
-  topK?: number,          // default: 10
-  memoryType?: string,    // filter by memory type
-  minTrust?: number,      // filter by minimum trust score
-  since?: Date,           // temporal lower bound
+  topK?: number,          // max results (default: 10)
+  memoryTypes?: string[], // filter by memory type: ['world', 'experience', ...]
+  minTrust?: number,      // minimum trust score (default: 0.0)
+  after?: string,         // ISO date string — only facts after this date
+  before?: string,        // ISO date string — only facts before this date
+  strategies?: string[],  // which strategies to run (default: all four)
+  includeOpinions?: boolean,      // default: true
+  includeObservations?: boolean,  // default: true
+  sourceFilter?: string,          // hard filter: only chunks whose source contains this
+  contextFilter?: string,         // hard filter: only chunks whose context contains this
+  sourceBoost?: { pattern: string; multiplier: number },   // soft preference by source
+  contextBoost?: { pattern: string; multiplier: number },  // soft preference by context
+  decayHalfLifeDays?: number,     // trust decay half-life (default: 180, set 0 to disable)
+  snippetChars?: number,          // max chars per result snippet
+  rrfK?: number,                  // RRF constant (default: 60)
 });
 
 // response shape:
 // {
-//   results: Array<{ text, score, sourceType, trustScore, memoryType, createdAt }>,
-//   opinions: Array<{ statement, confidence, evidence }>,
-//   observations: Array<{ text, createdAt }>,
+//   results: Array<{
+//     id: string,
+//     text: string,
+//     memoryType: string,
+//     source: string | null,
+//     sourceType: string,
+//     trustScore: number,
+//     eventTime: string | null,
+//     score: number,           // final fused + weighted score
+//     strategies: string[],    // which strategies found this chunk
+//   }>,
+//   opinions: Array<{ belief: string; confidence: number; domain: string | null }>,
+//   observations: Array<{ summary: string; domain: string | null; topic: string | null }>,
+//   totalCandidates: number,
+//   strategiesUsed: string[],
 // }
 ```
 
-### `processExtractions()`
+### `processExtractions(batchSize?)`
 
 Run the background entity extraction queue. Calls Ollama against queued chunks to extract entities and relationships, building out the knowledge graph. Run this periodically or after bulk ingestion.
 
 ```typescript
-await mira.processExtractions();
+const { processed, failed } = await mira.processExtractions(10); // batchSize default: 10
+```
+
+### `forget(chunkId)`
+
+Soft-delete a memory chunk by ID. Sets `is_active = FALSE` so the chunk is excluded from all recall queries while remaining in the database for audit purposes.
+
+```typescript
+const wasFound = await mira.forget('chunk-uuid-here'); // returns false if ID not found
+```
+
+### `supersede(oldChunkId, newText, options?)`
+
+Replace an outdated fact with corrected information. The old chunk is soft-deleted and linked to the new one via `superseded_by`. Use when a fact has changed:
+
+```typescript
+const newResult = await mira.supersede(
+  oldChunkId,
+  'Tom switched from Terraform to Pulumi for all new projects',
+  { memoryType: 'world', trustScore: 0.9 }
+);
+```
+
+### `forgetBySource(sourcePattern)`
+
+Soft-delete all chunks whose `source` field contains the given substring. Returns the count of deactivated chunks. Useful for clearing an entire conversation or document import:
+
+```typescript
+const count = await mira.forgetBySource('conversation:session-123');
+// count = number of chunks deactivated
 ```
 
 ### `reflect()`
@@ -195,6 +267,50 @@ Close the database connection. Call this when the agent session ends.
 mira.close();
 ```
 
+## Utility Functions
+
+These are exported directly from the `engram` package — no `Engram` instance required.
+
+### `shouldRetain(text)`
+
+Heuristic gate that scores text on how worth storing it is (0.0–1.0). Useful for filtering out phatic expressions, trivial acknowledgements, and bare questions before calling `retain()`.
+
+```typescript
+import { shouldRetain } from 'engram';
+
+const { score, reason } = shouldRetain('Tom decided to use Pulumi for all new IaC');
+// score: ~0.8   reason: 'decision language, technical terms'
+
+const { score } = shouldRetain('ok cool');
+// score: ~0.1   — phatic expression, skip storing
+
+if (score >= 0.5) {
+  await mira.retain(text, { ... });
+}
+```
+
+Signals that raise the score: decision language, technical terms (camelCase/paths), temporal markers, proper nouns, substantive length. Signals that lower it: phatic expressions, pure interrogatives, very short text.
+
+### `formatForPrompt(response, options?)`
+
+Format a `RecallResponse` into a string suitable for injecting into a system prompt. Handles token budgeting — stops adding content once `maxChars` would be exceeded.
+
+```typescript
+import { formatForPrompt } from 'engram';
+
+const memory = await mira.recall(userMessage, { topK: 10 });
+const memoryBlock = formatForPrompt(memory, {
+  maxChars?: number,       // default: 2000
+  showTrust?: boolean,     // include trust percentages inline (default: false)
+  showSource?: boolean,    // include source attribution (default: true)
+  header?: string,         // section heading (default: '## Relevant Memory Context')
+});
+
+const systemPrompt = `${basePrompt}\n\n${memoryBlock}`;
+```
+
+Priority order in output: opinions (highest signal) → observations → memory results.
+
 ## MCP Integration
 
 Expose Engram operations as MCP tools for agent frameworks that support the Model Context Protocol.
@@ -217,6 +333,8 @@ Tools exposed:
 | `engram_recall` | Retrieve relevant memories via four-way retrieval |
 | `engram_reflect` | Trigger a reflection cycle to synthesize observations and opinions |
 | `engram_process_extractions` | Process the entity extraction queue |
+| `engram_forget` | Soft-delete a memory chunk by ID |
+| `engram_supersede` | Replace an outdated fact with corrected text |
 
 ## Scheduled Reflection
 
@@ -305,7 +423,7 @@ const systemPrompt = buildPromptWithMemory(basePrompt, context);
 ```bash
 npm install
 npm run build        # compile TypeScript → dist/
-npm test             # run test suite (52 tests)
+npm test             # run test suite (87 tests)
 npm run typecheck    # TypeScript check without emit
 npm run example      # run examples/basic-usage.ts (requires Ollama)
 ```
