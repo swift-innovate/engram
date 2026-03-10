@@ -1,0 +1,53 @@
+{
+  "name": "engram",
+  "version": "0.1.0",
+  "description": "Memory traces for AI agents that strengthen with reinforcement",
+  "type": "module",
+  "main": "./dist/engram.js",
+  "types": "./dist/engram.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/engram.js",
+      "types": "./dist/engram.d.ts"
+    },
+    "./mcp-tools": {
+      "import": "./dist/mcp-tools.js",
+      "types": "./dist/mcp-tools.d.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc && cp src/schema.sql dist/schema.sql",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "dev": "tsx watch src/engram.ts",
+    "reflect": "tsx src/reflect.ts",
+    "example": "tsx examples/basic-usage.ts"
+  },
+  "dependencies": {
+    "better-sqlite3": "^9.4.3",
+    "sqlite-vec": "^0.1.6"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.8",
+    "@types/node": "^20.0.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.4.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "keywords": [
+    "memory",
+    "ai",
+    "agents",
+    "sqlite",
+    "vector-search",
+    "knowledge-graph"
+  ],
+  "license": "Apache-2.0"
+}
