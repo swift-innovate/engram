@@ -94,16 +94,16 @@ console.log(v.length); // 768
 
 ```bash
 # Check if nomic-embed-text is available
-curl http://localhost:11434/api/tags | grep nomic-embed-text
+curl http://starbase:40114/api/tags | grep nomic-embed-text
 
 # Test an embedding directly
-curl http://localhost:11434/api/embed -d '{"model":"nomic-embed-text","input":"test"}'
+curl http://starbase:40114/api/embed -d '{"model":"nomic-embed-text","input":"test"}'
 ```
 
 **Programmatic health check:**
 
 ```typescript
-const engram = await Engram.open('./agent.engram', { ollamaUrl: 'http://localhost:11434' });
+const engram = await Engram.open('./agent.engram', { ollamaUrl: 'http://starbase:40114' });
 
 // Verify the embedding pipeline works end-to-end
 try {
@@ -133,7 +133,7 @@ npm install engram
 import { Engram } from 'engram';
 
 const mira = await Engram.create('./mira.engram', {
-  ollamaUrl: 'http://localhost:11434',
+  ollamaUrl: 'http://starbase:40114',
   reflectMission: 'Focus on architecture preferences and infrastructure decisions.',
   retainMission: 'Prioritize technical decisions and project context. Ignore greetings.',
 });
@@ -158,7 +158,7 @@ Create a new engram file at the given path. Initializes the schema and applies c
 
 ```typescript
 const mira = await Engram.create('./mira.engram', {
-  ollamaUrl?: string,           // Ollama base URL (default: 'http://localhost:11434')
+  ollamaUrl?: string,           // Ollama base URL (default: 'http://starbase:40114')
   reflectMission?: string,      // guides what to synthesize during reflection
   retainMission?: string,       // guides what to prioritize during retention
   embedModel?: string,          // default: 'Xenova/nomic-embed-text-v1.5' (local) or 'nomic-embed-text' (Ollama)
@@ -395,7 +395,7 @@ import { ReflectScheduler } from 'engram';
 
 const scheduler = new ReflectScheduler({
   dbPath: './mira.engram',
-  ollamaUrl: 'http://localhost:11434',
+  ollamaUrl: 'http://starbase:40114',
   reflectModel: 'llama3.1:8b',
 });
 

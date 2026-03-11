@@ -162,4 +162,50 @@ describe('reflect()', () => {
     const result = await reflect({ dbPath });
     expect(result.durationMs).toBeGreaterThanOrEqual(0);
   });
+
+  it('reinforces the exact matching opinion instead of a same-prefix sibling', async () => {
+    dbPath = tmpDbPath();
+    await setupDb(dbPath, 5);
+
+    const db = new Database(dbPath);
+    db.prepare(`
+      INSERT INTO opinions (id, belief, confidence, domain, supporting_chunks, related_entities)
+      VALUES ('op-1', 'Tom prefers Terraform for all infrastructure work', 0.7, 'infrastructure', '[]', '[]')
+    `).run();
+    db.prepare(`
+      INSERT INTO opinions (id, belief, confidence, domain, supporting_chunks, related_entities)
+      VALUES ('op-2', 'Tom prefers Terraform for all production deployments', 0.7, 'infrastructure', '[]', '[]')
+    `).run();
+    db.close();
+
+    vi.stubGlobal('fetch', mockOllamaFetch(JSON.stringify({
+      observations: [],
+      opinion_updates: [
+        {
+          belief: 'Tom prefers Terraform for all production deployments',
+          direction: 'reinforce',
+          confidence_delta: 0.1,
+          domain: 'infrastructure',
+          evidence_chunk_ids: ['chk-1'],
+          entity_names: [],
+        },
+      ],
+      observation_refreshes: [],
+    })));
+
+    const result = await reflect({ dbPath });
+    expect(result.opinionsReinforced).toBe(1);
+
+    const verify = new Database(dbPath);
+    const opinions = verify.prepare(`
+      SELECT id, belief, confidence
+      FROM opinions
+      WHERE id IN ('op-1', 'op-2')
+      ORDER BY id
+    `).all() as Array<{ id: string; belief: string; confidence: number }>;
+    verify.close();
+
+    expect(opinions.find(op => op.id === 'op-1')?.confidence).toBe(0.7);
+    expect(opinions.find(op => op.id === 'op-2')?.confidence).toBeGreaterThan(0.7);
+  });
 });

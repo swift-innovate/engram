@@ -1,4 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
+import Database from 'better-sqlite3';
 import { Engram } from '../src/engram.js';
 import {
   MockEmbedder,
@@ -174,6 +175,12 @@ describe('Engram', () => {
     const forgotten = await engram.forget(r.chunkId);
     expect(forgotten).toBe(true);
 
+    const db = new Database(dbPath);
+    const queueRow = db.prepare('SELECT status, error FROM extraction_queue WHERE chunk_id = ?').get(r.chunkId) as any;
+    db.close();
+    expect(queueRow.status).toBe('completed');
+    expect(queueRow.error).toContain('deactivated');
+
     // Should not appear in recall
     const response = await engram.recall('Terraform homelab', { strategies: ['keyword'] });
     expect(response.results.some(res => res.id === r.chunkId)).toBe(false);
@@ -218,6 +225,18 @@ describe('Engram', () => {
 
     const count = await engram.forgetBySource('session:aaa');
     expect(count).toBe(2);
+
+    const db = new Database(dbPath);
+    const queueRows = db.prepare(`
+      SELECT status, error
+      FROM extraction_queue eq
+      JOIN chunks c ON c.id = eq.chunk_id
+      WHERE c.source = 'session:aaa'
+    `).all() as any[];
+    db.close();
+    expect(queueRows).toHaveLength(2);
+    expect(queueRows.every(row => row.status === 'completed')).toBe(true);
+    expect(queueRows.every(row => String(row.error).includes('deactivated'))).toBe(true);
 
     // Session B chunk should still appear in recall
     const response = await engram.recall('session', { strategies: ['keyword'] });

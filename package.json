@@ -19,7 +19,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc && cp src/schema.sql dist/schema.sql",
+    "build": "tsc && node -e \"require('fs').copyFileSync('src/schema.sql', 'dist/schema.sql')\"",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",

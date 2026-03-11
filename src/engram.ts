@@ -79,7 +79,7 @@ export interface EngramOptions {
     literalism?: number;
     empathy?: number;
   };
-  /** Ollama endpoint (default: http://localhost:11434) */
+  /** Ollama endpoint (default: http://starbase:40114) */
   ollamaUrl?: string;
   /** Embedding model (default: nomic-embed-text) */
   embedModel?: string;
@@ -124,7 +124,7 @@ export class Engram {
 
   private static async init(path: string, options: EngramOptions): Promise<Engram> {
     const {
-      ollamaUrl = 'http://localhost:11434',
+      ollamaUrl = 'http://starbase:40114',
       embedModel,
       embedDimensions,
       reflectModel = 'llama3.1:8b',
@@ -277,9 +277,22 @@ export class Engram {
    * Returns true if the chunk was found and deactivated.
    */
   async forget(chunkId: string): Promise<boolean> {
-    const result = this.db.prepare(
-      `UPDATE chunks SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND is_active = TRUE`
-    ).run(chunkId);
+    const result = this.db.transaction(() => {
+      const chunkResult = this.db.prepare(
+        `UPDATE chunks SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND is_active = TRUE`
+      ).run(chunkId);
+
+      if (chunkResult.changes > 0) {
+        this.db.prepare(`
+          UPDATE extraction_queue
+          SET status = 'completed', error = 'chunk deactivated'
+          WHERE chunk_id = ? AND status IN ('pending', 'processing')
+        `).run(chunkId);
+      }
+
+      return chunkResult;
+    })();
+
     return result.changes > 0;
   }
 
@@ -302,9 +315,31 @@ export class Engram {
    * Useful for clearing out an entire conversation or document import.
    */
   async forgetBySource(sourcePattern: string): Promise<number> {
-    const result = this.db.prepare(
-      `UPDATE chunks SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP WHERE source LIKE ? AND is_active = TRUE`
-    ).run(`%${sourcePattern}%`);
+    const result = this.db.transaction(() => {
+      const chunkIds = this.db.prepare(`
+        SELECT id
+        FROM chunks
+        WHERE source LIKE ? AND is_active = TRUE
+      `).all(`%${sourcePattern}%`) as Array<{ id: string }>;
+
+      const chunkResult = this.db.prepare(
+        `UPDATE chunks SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP WHERE source LIKE ? AND is_active = TRUE`
+      ).run(`%${sourcePattern}%`);
+
+      if (chunkIds.length > 0) {
+        const updateQueue = this.db.prepare(`
+          UPDATE extraction_queue
+          SET status = 'completed', error = 'chunk deactivated'
+          WHERE chunk_id = ? AND status IN ('pending', 'processing')
+        `);
+        for (const chunk of chunkIds) {
+          updateQueue.run(chunk.id);
+        }
+      }
+
+      return chunkResult;
+    })();
+
     return result.changes;
   }
 }

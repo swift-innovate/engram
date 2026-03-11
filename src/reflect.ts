@@ -24,7 +24,7 @@ import { pathToFileURL } from 'url';
 export interface ReflectConfig {
   /** Path to the agent's SQLite memory file */
   dbPath: string;
-  /** Ollama endpoint (default: http://localhost:11434) */
+  /** Ollama endpoint (default: http://starbase:40114) */
   ollamaUrl?: string;
   /** Model for reflection (default: llama3.1:8b — fast, good enough for synthesis) */
   reflectModel?: string;
@@ -322,6 +322,50 @@ function getBankConfig(db: Database.Database): Record<string, string> {
   return config;
 }
 
+function normalizeBelief(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function beliefSimilarity(a: string, b: string): number {
+  const aNorm = normalizeBelief(a);
+  const bNorm = normalizeBelief(b);
+
+  if (!aNorm || !bNorm) return 0;
+  if (aNorm === bNorm) return 1;
+
+  const aTokens = new Set(aNorm.split(' ').filter(Boolean));
+  const bTokens = new Set(bNorm.split(' ').filter(Boolean));
+  const intersection = [...aTokens].filter(token => bTokens.has(token)).length;
+  return intersection / Math.max(aTokens.size, bTokens.size, 1);
+}
+
+function findMatchingOpinion(
+  existingOpinions: ExistingOpinion[],
+  belief: string,
+  domain: string
+): ExistingOpinion | undefined {
+  const exact = existingOpinions.find(op =>
+    op.domain === domain && normalizeBelief(op.belief) === normalizeBelief(belief)
+  );
+  if (exact) return exact;
+
+  let best: { opinion: ExistingOpinion; score: number } | undefined;
+  for (const opinion of existingOpinions) {
+    if (opinion.domain !== domain) continue;
+    const score = beliefSimilarity(opinion.belief, belief);
+    if (score < 0.85) continue;
+    if (!best || score > best.score) {
+      best = { opinion, score };
+    }
+  }
+
+  return best?.opinion;
+}
+
 // =============================================================================
 // Core Reflect Operation
 // =============================================================================
@@ -329,7 +373,7 @@ function getBankConfig(db: Database.Database): Record<string, string> {
 export async function reflect(config: ReflectConfig): Promise<ReflectResult> {
   const {
     dbPath,
-    ollamaUrl = 'http://localhost:11434',
+    ollamaUrl = 'http://starbase:40114',
     reflectModel = 'llama3.1:8b',
     batchSize = 50,
     minFactsThreshold = 5,
@@ -475,11 +519,7 @@ export async function reflect(config: ReflectConfig): Promise<ReflectResult> {
           result.opinionsFormed++;
 
         } else if (opUpdate.direction === 'reinforce') {
-          // Find existing opinion by fuzzy belief match
-          const existing = existingOps.find(o => 
-            o.belief.toLowerCase().includes(opUpdate.belief.toLowerCase().substring(0, 30)) ||
-            opUpdate.belief.toLowerCase().includes(o.belief.toLowerCase().substring(0, 30))
-          );
+          const existing = findMatchingOpinion(existingOps, opUpdate.belief, opUpdate.domain);
           if (existing) {
             const clampedDelta = Math.min(0.15, Math.max(0, opUpdate.confidence_delta));
             const mergedSupporting = [...new Set([
@@ -496,10 +536,7 @@ export async function reflect(config: ReflectConfig): Promise<ReflectResult> {
           }
 
         } else if (opUpdate.direction === 'challenge') {
-          const existing = existingOps.find(o =>
-            o.belief.toLowerCase().includes(opUpdate.belief.toLowerCase().substring(0, 30)) ||
-            opUpdate.belief.toLowerCase().includes(o.belief.toLowerCase().substring(0, 30))
-          );
+          const existing = findMatchingOpinion(existingOps, opUpdate.belief, opUpdate.domain);
           if (existing) {
             const clampedDelta = Math.max(-0.15, Math.min(0, opUpdate.confidence_delta));
             const mergedContradicting = [...new Set([
@@ -649,7 +686,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
     process.exit(1);
   }
 
-  const ollamaUrl = process.env.OLLAMA_URL || 'http://localhost:11434';
+  const ollamaUrl = process.env.OLLAMA_URL || 'http://starbase:40114';
   const model = process.env.REFLECT_MODEL || 'llama3.1:8b';
 
   console.log(`[Reflect] Manual run: ${dbPath} via ${model} @ ${ollamaUrl}`);
