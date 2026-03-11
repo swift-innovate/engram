@@ -111,9 +111,10 @@ Agent memory files use the `.engram` extension (they're SQLite files):
 |-----------|---------|-----------|
 | better-sqlite3 | SQLite driver for Node.js | Yes |
 | sqlite-vec | Vector similarity search extension | Yes (for semantic recall) |
+| @xenova/transformers | In-process embeddings (retain + recall) | Yes (default embedding path) |
 | Ollama | Local LLM for extraction + reflection | Yes (for extract + reflect) |
-| nomic-embed-text | Embedding model via Ollama | Yes (for retain + recall) |
 | llama3.1:8b | Fast model for extraction + reflection | Recommended |
+| nomic-embed-text (Ollama) | Ollama embedding model | Only when `useOllamaEmbeddings: true` |
 
 **Herd alternative:** swift-innovate/herd exposes the same Ollama HTTP API on port `40114`. Use `ollamaUrl: 'http://localhost:40114'` to point Engram at Herd instead.
 
@@ -122,19 +123,27 @@ Agent memory files use the `.engram` extension (they're SQLite files):
 ```
 engram/
 ├── CLAUDE.md           ← you are here
-├── README.md           ← public-facing docs (TODO)
-├── package.json        ← (TODO)
-├── tsconfig.json       ← (TODO)
+├── README.md           ← public-facing docs
+├── package.json
+├── tsconfig.json
+├── vitest.config.ts
 ├── src/
-│   ├── schema.sql      ← full database schema
-│   ├── retain.ts       ← fast write + batch import + entity extraction queue
-│   ├── recall.ts       ← four-way retrieval + RRF + trust weighting
-│   ├── reflect.ts      ← scheduled learning engine + prompt templates
-│   ├── engram.ts       ← unified Engram class interface (TODO)
-│   └── mcp-tools.ts    ← MCP tool definitions for agent integration (TODO)
-├── tests/              ← (TODO)
+│   ├── schema.sql           ← full database schema
+│   ├── retain.ts            ← fast write + dedup + batch import + extraction queue
+│   ├── recall.ts            ← four-way retrieval + RRF + trust/decay weighting + formatForPrompt
+│   ├── reflect.ts           ← scheduled learning engine + prompt templates
+│   ├── local-embedder.ts    ← in-process embeddings via @xenova/transformers
+│   ├── engram.ts            ← unified Engram class + public API exports
+│   └── mcp-tools.ts         ← MCP tool definitions (retain/recall/reflect/forget/supersede)
+├── tests/
+│   ├── helpers.ts
+│   ├── retain.test.ts
+│   ├── retain-gate.test.ts
+│   ├── recall.test.ts
+│   ├── reflect.test.ts
+│   └── engram.test.ts
 └── examples/
-    └── basic-usage.ts  ← (TODO)
+    └── basic-usage.ts
 ```
 
 ## Usage
@@ -230,6 +239,6 @@ git init && git branch -M main
 
 - [x] **Reflect schedule**: Library default is manual (call `engram.reflect()` or the CLI). `ReflectScheduler` class ships for timer-based use. Recommendation for valor-engine: `ReflectScheduler` with a 6-hour default, configurable per operative.
 
-- [x] **Embedding model**: `nomic-embed-text` (768d) as default. Override via `embedModel` + `embedDimensions` options. `bge-small` (384d) is a valid alternative if embed latency or disk size becomes a constraint.
+- [x] **Embedding model**: `Xenova/nomic-embed-text-v1.5` (768d) runs in-process via `@xenova/transformers` as default — no Ollama required for retain/recall. Override via `embedModel` option. `Xenova/all-MiniLM-L6-v2` (384d) is a valid alternative for lower disk/memory use. Opt into Ollama embeddings via `useOllamaEmbeddings: true` (e.g., for GPU acceleration). Existing `.engram` files with Ollama-generated vectors are fully compatible — same model weights, same 768-dim space.
 
 - [ ] **`.engram` MIME type**: Deferred. Extension is established; OS MIME registration is future work if IDE/tooling support becomes valuable.
