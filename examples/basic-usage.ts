@@ -2,7 +2,7 @@
  * Basic Engram usage example
  *
  * Prerequisites:
- *   - Ollama running at http://localhost:11434
+ *   - Ollama running at http://starbase:40114
  *   - nomic-embed-text model: ollama pull nomic-embed-text
  *   - llama3.1:8b model:      ollama pull llama3.1:8b
  *
@@ -17,7 +17,7 @@ import { Engram } from '../src/engram.js';
 const mira = await Engram.create('./mira.engram', {
   reflectMission: 'Focus on architecture preferences, project patterns, and infrastructure decisions.',
   retainMission: 'Prioritize technical decisions, code patterns, and project context. Ignore greetings.',
-  ollamaUrl: 'http://localhost:11434',
+  ollamaUrl: 'http://starbase:40114',
 });
 
 console.log('Engram initialized. Storing memories...\n');

@@ -147,6 +147,14 @@ describe('retain() — deduplication', () => {
     expect(r2.deduplicated).toBe(true);
   });
 
+  it('dedupMode normalized: deduplicates despite internal whitespace differences', async () => {
+    const r1 = await retain(db, 'Tom  prefers   Terraform', embedder, { dedupMode: 'normalized' });
+    const r2 = await retain(db, 'tom prefers terraform', embedder, { dedupMode: 'normalized' });
+
+    expect(r2.chunkId).toBe(r1.chunkId);
+    expect(r2.deduplicated).toBe(true);
+  });
+
   it('exact dedup: different text creates new chunk', async () => {
     const r1 = await retain(db, 'Tom prefers Terraform', embedder);
     const r2 = await retain(db, 'Tom prefers Pulumi', embedder);
@@ -265,6 +273,23 @@ describe('processExtractionQueue()', () => {
     const result = await processExtractionQueue(db);
     expect(result.processed).toBe(0);
     expect(result.failed).toBe(0);
+    db.close();
+  });
+
+  it('skips inactive chunks even if they remain in the extraction queue', async () => {
+    const db = createTestDb();
+    const embedder = new MockEmbedder();
+    vi.stubGlobal('fetch', mockOllamaFetch(EXTRACTION_RESPONSE));
+
+    const retained = await retain(db, 'Alice prefers Rust', embedder, { memoryType: 'world' });
+    db.prepare(`UPDATE chunks SET is_active = FALSE WHERE id = ?`).run(retained.chunkId);
+
+    const result = await processExtractionQueue(db);
+    expect(result.processed).toBe(0);
+    expect(result.failed).toBe(0);
+
+    const entities = db.prepare('SELECT count(*) as n FROM entities').get() as { n: number };
+    expect(entities.n).toBe(0);
     db.close();
   });
 });

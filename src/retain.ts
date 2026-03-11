@@ -67,7 +67,7 @@ export class OllamaEmbeddings implements EmbeddingProvider {
   public readonly dimensions: number;
 
   constructor(
-    url: string = 'http://localhost:11434',
+    url: string = 'http://starbase:40114',
     model: string = 'nomic-embed-text',
     dimensions: number = 768
   ) {
@@ -102,6 +102,19 @@ function normalizeForDedup(text: string): string {
   return text.toLowerCase().replace(/\s+/g, ' ').trim();
 }
 
+function findNormalizedDuplicate(
+  db: Database.Database,
+  normalizedText: string
+): { id: string; trust_score: number } | undefined {
+  const activeChunks = db.prepare(`
+    SELECT id, text, trust_score
+    FROM chunks
+    WHERE is_active = TRUE
+  `).all() as Array<{ id: string; text: string; trust_score: number }>;
+
+  return activeChunks.find(chunk => normalizeForDedup(chunk.text) === normalizedText);
+}
+
 // =============================================================================
 // Fast Retain (no LLM, just embed + store)
 // =============================================================================
@@ -129,9 +142,7 @@ export async function retain(
   // Dedup check — runs before embed to avoid unnecessary Ollama calls
   if (dedupMode !== 'none') {
     const existing = (dedupMode === 'normalized'
-      ? db.prepare(
-          `SELECT id, trust_score FROM chunks WHERE is_active = TRUE AND LOWER(TRIM(text)) = ? LIMIT 1`
-        ).get(normalizeForDedup(text))
+      ? findNormalizedDuplicate(db, normalizeForDedup(text))
       : db.prepare(
           `SELECT id, trust_score FROM chunks WHERE is_active = TRUE AND text = ? LIMIT 1`
         ).get(text)
@@ -336,7 +347,7 @@ async function extractEntities(
  */
 export async function processExtractionQueue(
   db: Database.Database,
-  ollamaUrl: string = 'http://localhost:11434',
+  ollamaUrl: string = 'http://starbase:40114',
   model: string = 'llama3.1:8b',
   batchSize: number = 10
 ): Promise<{ processed: number; failed: number }> {
@@ -348,7 +359,7 @@ export async function processExtractionQueue(
     SELECT eq.chunk_id, c.text
     FROM extraction_queue eq
     JOIN chunks c ON eq.chunk_id = c.id
-    WHERE eq.status = 'pending' AND eq.attempts < 3
+    WHERE eq.status = 'pending' AND eq.attempts < 3 AND c.is_active = TRUE
     ORDER BY eq.queued_at ASC
     LIMIT ?
   `).all(batchSize) as Array<{ chunk_id: string; text: string }>;

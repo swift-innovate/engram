@@ -155,7 +155,7 @@ import { Engram } from 'engram';
 const mira = await Engram.create('./mira.engram', {
   reflectMission: 'Focus on architecture preferences, project patterns, and infrastructure decisions.',
   retainMission: 'Prioritize technical decisions, code patterns, and project context. Ignore greetings.',
-  ollamaUrl: 'http://localhost:11434',
+  ollamaUrl: 'http://starbase:40114',
 });
 ```
 
