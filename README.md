@@ -74,6 +74,43 @@ const mira = await Engram.create('./mira.engram', {
 
 Herd exposes the same Ollama HTTP API (`/api/embed`, `/api/generate`), so no other changes are needed.
 
+### Verifying Your Setup
+
+Before integrating Engram into an agent, verify the embedding model is reachable. A common failure mode is Engram opening successfully (`Engram.open()` only touches SQLite) while the embedding pipeline silently fails on every `retain()` call because the Ollama model isn't available.
+
+**Quick verification:**
+
+```bash
+# Check if nomic-embed-text is available
+curl http://localhost:11434/api/tags | grep nomic-embed-text
+
+# Test an embedding directly
+curl http://localhost:11434/api/embed -d '{"model":"nomic-embed-text","input":"test"}'
+```
+
+**Programmatic health check:**
+
+```typescript
+const engram = await Engram.open('./agent.engram', { ollamaUrl: 'http://localhost:11434' });
+
+// Verify the embedding pipeline works end-to-end
+try {
+  const result = await engram.retain('__health_check__', {
+    memoryType: 'world',
+    source: 'health_check',
+    trustScore: 0.0,
+    skipExtraction: true,
+  });
+  await engram.forget(result.chunkId);
+  console.log('✓ Engram healthy — embedding model reachable');
+} catch (err) {
+  console.error('✗ Engram broken — embedding model unreachable:', err.message);
+  // Disable Engram for this session rather than running with silent failures
+}
+```
+
+**Why this matters:** `Engram.open()` succeeds even when the embedding model doesn't exist — it only fails on the first actual `retain()` call. Without a health check, your agent can run for hours with "Engram: active" in its status while silently storing nothing.
+
 ## Quick Start
 
 ```bash
@@ -417,6 +454,135 @@ gateway.on('message', async (msg) => {
 const context = await miraMemory.recall(userMessage, { topK: 10 });
 const systemPrompt = buildPromptWithMemory(basePrompt, context);
 ```
+
+## Integration with Custom Frameworks
+
+If you're building your own agent framework (not using Operative or valor-engine), there are three integration patterns to be aware of.
+
+### Pattern 1: Direct Integration (Simplest)
+
+Call Engram methods directly from your agent loop. This works but couples your framework to the Engram API.
+
+```typescript
+import { Engram, shouldRetain, formatForPrompt } from 'engram';
+
+const memory = await Engram.open('./agent.engram', { ollamaUrl: '...' });
+
+// In your conversation loop:
+async function agentLoop(userInput: string) {
+  // 1. Recall before LLM call
+  const context = await memory.recall(userInput, { topK: 10 });
+  const memoryBlock = formatForPrompt(context, { maxChars: 2000 });
+
+  // 2. Call LLM with memory context injected into system prompt
+  const response = await callLLM(userInput, memoryBlock);
+
+  // 3. Retain after LLM call (with gate)
+  const userScore = shouldRetain(userInput);
+  if (userScore.score >= 0.3) {
+    await memory.retain(userInput, {
+      memoryType: 'experience',
+      sourceType: 'user_stated',
+      trustScore: 0.85,
+    });
+  }
+
+  const assistantScore = shouldRetain(response);
+  if (assistantScore.score >= 0.3) {
+    await memory.retain(response, {
+      memoryType: 'experience',
+      sourceType: 'agent_generated',
+      trustScore: 0.6,
+    });
+  }
+
+  return response;
+}
+
+// 4. Background ticks
+setInterval(() => memory.processExtractions(10), 5 * 60 * 1000);  // every 5 min
+setInterval(() => memory.reflect(), 6 * 60 * 60 * 1000);           // every 6 hours
+```
+
+### Pattern 2: Adapter Layer (Recommended)
+
+Wrap Engram behind a thin adapter so your framework never imports `engram` directly. This makes Engram an optional dependency.
+
+**Critical: pass `shouldRetain` and `formatForPrompt` alongside the instance.**
+
+These are standalone functions exported from the `engram` package. If your framework tries to dynamically `import('engram')` at runtime to get these functions, Node's module resolution may fail depending on how your framework is installed (e.g., as a `file:` dependency with its own `node_modules`). The safe pattern is to import at the agent level and pass the references in:
+
+```typescript
+// In your AGENT code (not framework code):
+import { Engram, shouldRetain, formatForPrompt } from 'engram';
+
+const instance = await Engram.open('./agent.engram', { ... });
+
+// Pass all three to your framework
+framework.init({
+  engram: {
+    instance,
+    shouldRetain,      // pass the function reference
+    formatForPrompt,   // pass the function reference
+  },
+});
+```
+
+```typescript
+// In your FRAMEWORK code:
+async function recallContext(query: string, engram: EngramLike, formatFn: Function) {
+  const response = await engram.recall(query, { topK: 10 });
+  return formatFn(response, { maxChars: 2000 });
+}
+
+async function retainTurn(input: string, response: string, engram: EngramLike, shouldRetainFn: Function) {
+  if (shouldRetainFn(input).score >= threshold) {
+    await engram.retain(input, { ... });
+  }
+  if (shouldRetainFn(response).score >= threshold) {
+    await engram.retain(response, { ... });
+  }
+}
+```
+
+**Why not dynamic import?** If your framework package has its own `node_modules` directory (common with `file:` dependencies or npm workspaces), `import('engram')` resolves from the framework's module context — not the agent's. The `engram` package may not be in the framework's dependency tree, causing a silent failure. Passing the functions directly at the agent level avoids this entirely.
+
+### Pattern 3: MCP Tools
+
+If your agent supports the Model Context Protocol, use the MCP tools export. See the [MCP Integration](#mcp-integration) section above.
+
+### Background Processing
+
+Engram's extraction and reflection are designed to run in the background, not inline with conversation turns:
+
+- **Extraction** (`processExtractions`): Run every 3–5 minutes. Processes queued chunks through Ollama to extract entities and relationships. Each batch processes up to N chunks (default 10).
+- **Reflection** (`reflect`): Run every 2–6 hours. Synthesizes unreflected chunks into observations and opinions. This is the expensive operation — it reads all unreflected facts and calls Ollama to produce higher-order understanding.
+
+Both are safe to run concurrently with `retain()` and `recall()` — SQLite WAL mode handles concurrent readers and one writer.
+
+If your framework has no scheduler, use `setInterval`:
+
+```typescript
+const extractionTimer = setInterval(() => memory.processExtractions(10), 5 * 60 * 1000);
+const reflectionTimer = setInterval(() => memory.reflect(), 6 * 60 * 60 * 1000);
+
+// On shutdown:
+clearInterval(extractionTimer);
+clearInterval(reflectionTimer);
+memory.close();
+```
+
+### Common Pitfalls
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| "Engram active" but zero chunks | Embedding model not available | Run `ollama pull nomic-embed-text` and verify with the health check above |
+| Health check passes but retain still empty | `shouldRetain`/`formatForPrompt` imported via dynamic `import('engram')` fails silently in framework context | Pass the function references from the agent, not via dynamic import in the framework |
+| Reflection runs but produces nothing | Zero chunks in the database | Fix retain first; reflection works on accumulated chunks |
+| Extraction queue stays at 0 | Chunks retained with `skipExtraction: true` or non-world/experience types | Only `world` and `experience` types are queued for extraction by default |
+| Entities/relations empty despite chunks | Extraction tick not running, or reflect model not available | Verify `processExtractions()` is being called periodically and `llama3.1:8b` is pulled |
+| Recall returns empty despite chunks | `sqlite-vec` extension not loaded | Check that the `sqlite-vec` npm package is installed; without it, semantic recall is disabled |
+| Trust scores not affecting results | All chunks have the same trust score | Differentiate: user statements (0.85), agent-generated (0.6), inferred (0.5), tool results (0.4) |
 
 ## Development
 
