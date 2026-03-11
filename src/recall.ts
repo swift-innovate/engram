@@ -472,7 +472,9 @@ export async function recall(
 
   // Run strategies
   if (strategies.includes('semantic')) {
-    const queryEmbedding = await embedder.embed(query);
+    const queryEmbedding = 'embedQuery' in embedder
+      ? await (embedder as EmbeddingProvider & { embedQuery: (t: string) => Promise<Float32Array> }).embedQuery(query)
+      : await embedder.embed(query);
     const results = semanticSearch(db, queryEmbedding, perStrategyLimit, filters);
     if (results.length > 0) {
       strategyResults.push(results);

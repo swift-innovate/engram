@@ -31,6 +31,7 @@ import {
   retainBatch,
   processExtractionQueue,
   OllamaEmbeddings,
+  LocalEmbedder,
   shouldRetain,
   type RetainOptions,
   type RetainResult,
@@ -65,7 +66,7 @@ export type {
   ReflectResult,
   FormatForPromptOptions,
 };
-export { OllamaEmbeddings, ReflectScheduler, shouldRetain, formatForPrompt };
+export { OllamaEmbeddings, LocalEmbedder, ReflectScheduler, shouldRetain, formatForPrompt };
 
 export interface EngramOptions {
   /** Mission for the reflection engine: what to focus on during synthesis */
@@ -88,6 +89,8 @@ export interface EngramOptions {
   reflectModel?: string;
   /** Override the embedding provider — useful for testing without Ollama */
   embedder?: EmbeddingProvider;
+  /** Use Ollama for embeddings instead of local Transformers.js (default: false) */
+  useOllamaEmbeddings?: boolean;
 }
 
 // =============================================================================
@@ -122,10 +125,11 @@ export class Engram {
   private static async init(path: string, options: EngramOptions): Promise<Engram> {
     const {
       ollamaUrl = 'http://localhost:11434',
-      embedModel = 'nomic-embed-text',
-      embedDimensions = 768,
+      embedModel,
+      embedDimensions,
       reflectModel = 'llama3.1:8b',
       embedder: injectedEmbedder,
+      useOllamaEmbeddings = false,
     } = options;
 
     const db = new Database(path);
@@ -144,7 +148,26 @@ export class Engram {
     const schema = readFileSync(schemaPath, 'utf8');
     db.exec(schema);
 
-    const embedder = injectedEmbedder ?? new OllamaEmbeddings(ollamaUrl, embedModel, embedDimensions);
+    // Embedding provider selection (priority order):
+    // 1. Injected embedder — caller controls everything (used in tests)
+    // 2. Ollama embeddings — opt-in via useOllamaEmbeddings flag
+    // 3. Local Transformers.js — default, zero network dependency
+    let embedder: EmbeddingProvider;
+    if (injectedEmbedder) {
+      embedder = injectedEmbedder;
+    } else if (useOllamaEmbeddings) {
+      embedder = new OllamaEmbeddings(
+        ollamaUrl,
+        embedModel ?? 'nomic-embed-text',
+        embedDimensions ?? 768,
+      );
+    } else {
+      const localModel = embedModel ?? 'Xenova/nomic-embed-text-v1.5';
+      const local = new LocalEmbedder(localModel);
+      await local.init();
+      embedder = local;
+    }
+
     return new Engram(db, path, embedder, ollamaUrl, reflectModel);
   }
 

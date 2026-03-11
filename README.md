@@ -57,12 +57,13 @@ Engram mirrors how biological memory works:
 
 ## Prerequisites
 
-Ollama must be running with the required models before using extraction or reflection:
+Ollama is required for entity extraction and reflection (LLM tasks). Embeddings run locally via Transformers.js — no Ollama needed for `retain()` or `recall()`.
 
 ```bash
-ollama pull nomic-embed-text   # embedding model (retain + recall)
-ollama pull llama3.1:8b        # extraction + reflection
+ollama pull llama3.1:8b        # required for processExtractions() and reflect()
 ```
+
+The embedding model (`Xenova/nomic-embed-text-v1.5`) downloads automatically on first use to `~/.cache/xenova/` (~30MB). No manual pull needed.
 
 If you run models via **Herd** (swift-innovate/herd), use port `40114` instead of Ollama's default:
 
@@ -78,7 +79,18 @@ Herd exposes the same Ollama HTTP API (`/api/embed`, `/api/generate`), so no oth
 
 Before integrating Engram into an agent, verify the embedding model is reachable. A common failure mode is Engram opening successfully (`Engram.open()` only touches SQLite) while the embedding pipeline silently fails on every `retain()` call because the Ollama model isn't available.
 
-**Quick verification:**
+**Quick verification (default local embeddings path):**
+
+```typescript
+// Embeddings are local — just verify the library loads correctly
+import { LocalEmbedder } from 'engram';
+const e = new LocalEmbedder();
+await e.init(); // downloads model on first run, loads from cache after
+const v = await e.embed('test');
+console.log(v.length); // 768
+```
+
+**If using `useOllamaEmbeddings: true`:**
 
 ```bash
 # Check if nomic-embed-text is available
@@ -149,9 +161,10 @@ const mira = await Engram.create('./mira.engram', {
   ollamaUrl?: string,           // Ollama base URL (default: 'http://localhost:11434')
   reflectMission?: string,      // guides what to synthesize during reflection
   retainMission?: string,       // guides what to prioritize during retention
-  embedModel?: string,          // default: 'nomic-embed-text'
-  embedDimensions?: number,     // default: 768
+  embedModel?: string,          // default: 'Xenova/nomic-embed-text-v1.5' (local) or 'nomic-embed-text' (Ollama)
+  embedDimensions?: number,     // only relevant when useOllamaEmbeddings: true
   reflectModel?: string,        // default: 'llama3.1:8b'
+  useOllamaEmbeddings?: boolean, // use Ollama for embeddings instead of local (default: false)
   disposition?: {               // behavioral tuning for reflection
     skepticism?: number,        // 0–1
     literalism?: number,        // 0–1
@@ -428,9 +441,10 @@ Agent memory files use the `.engram` extension. They are standard SQLite databas
 |-----------|---------|-----------|
 | better-sqlite3 | SQLite driver for Node.js | Yes |
 | sqlite-vec | Vector similarity search extension | Yes (for semantic recall) |
+| @xenova/transformers | In-process embeddings (retain + recall) | Yes (default embedding path) |
 | Ollama | Local LLM for extraction + reflection | Yes (for extract + reflect) |
-| nomic-embed-text | Embedding model via Ollama | Yes (for retain + recall) |
 | llama3.1:8b | Fast model for extraction + reflection | Recommended |
+| nomic-embed-text (Ollama) | Ollama embedding model | Only when `useOllamaEmbeddings: true` |
 
 ## Integration with valor-engine
 
@@ -576,7 +590,7 @@ memory.close();
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| "Engram active" but zero chunks | Embedding model not available | Run `ollama pull nomic-embed-text` and verify with the health check above |
+| "Engram active" but zero chunks | Embedding model failed to load | Default path: verify `@xenova/transformers` is installed and `~/.cache/xenova/` is writable. Ollama path: run `ollama pull nomic-embed-text` |
 | Health check passes but retain still empty | `shouldRetain`/`formatForPrompt` imported via dynamic `import('engram')` fails silently in framework context | Pass the function references from the agent, not via dynamic import in the framework |
 | Reflection runs but produces nothing | Zero chunks in the database | Fix retain first; reflection works on accumulated chunks |
 | Extraction queue stays at 0 | Chunks retained with `skipExtraction: true` or non-world/experience types | Only `world` and `experience` types are queued for extraction by default |

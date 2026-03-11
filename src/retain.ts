@@ -55,6 +55,8 @@ export interface EmbeddingProvider {
   readonly dimensions: number;
 }
 
+export { LocalEmbedder } from './local-embedder.js';
+
 // =============================================================================
 // Ollama Embedding Provider
 // =============================================================================
