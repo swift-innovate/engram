@@ -24,7 +24,7 @@ import type { RecallOptions } from './recall.js';
 export const ENGRAM_TOOLS = [
   {
     name: 'engram_retain' as const,
-    description: 'Store a memory trace in the agent\'s engram. Fast path — no LLM involved, ~5ms.',
+    description: 'Store a memory trace. Fast path (~5ms, no LLM). Parameters use camelCase: text (required), memoryType (world|experience|observation|opinion), sourceType (user_stated|inferred|external_doc|tool_result|agent_generated), trustScore (0.0-1.0). Example: {text: "Tom prefers Terraform", memoryType: "world", sourceType: "user_stated", trustScore: 0.9}',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -71,7 +71,7 @@ export const ENGRAM_TOOLS = [
 
   {
     name: 'engram_recall' as const,
-    description: 'Retrieve relevant memories using semantic, keyword, graph, and temporal search fused via Reciprocal Rank Fusion. Returns ranked chunks plus synthesized opinions and observations.',
+    description: 'Retrieve relevant memories via four-strategy search (semantic, keyword, graph, temporal) fused with Reciprocal Rank Fusion. Example: {query: "What tools does Tom use?", topK: 5}. Returns results[], opinions[], observations[].',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -189,7 +189,7 @@ export const ENGRAM_TOOLS = [
   },
   {
     name: 'engram_session' as const,
-    description: 'Infer or resume a working memory session for the given message. Returns session state and related long-term context. Call once per incoming user message before the LLM call.',
+    description: 'Infer or resume a working memory session for the given message. Call once per incoming user message before the LLM call. Default similarity threshold: 0.55. Example: {message: "plan the deployment"}. Returns session state + related long-term context.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -203,7 +203,7 @@ export const ENGRAM_TOOLS = [
         },
         threshold: {
           type: 'number',
-          description: 'Cosine similarity threshold for session matching (default: 0.72)',
+          description: 'Cosine similarity threshold for session matching (default: 0.55). Lower = more aggressive matching, higher = more new sessions.',
         },
       },
       required: ['message'],
@@ -223,6 +223,7 @@ interface McpContent {
 }
 
 export interface McpToolResult {
+  [key: string]: unknown;
   content: McpContent[];
   isError?: boolean;
 }

@@ -52,6 +52,7 @@ import type {
   WorkingMemoryState,
   WorkingMemoryOptions,
   WorkingSessionResult,
+  SessionCandidate,
 } from './working-memory-types.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -75,6 +76,7 @@ export type {
   WorkingMemoryState,
   WorkingMemoryOptions,
   WorkingSessionResult,
+  SessionCandidate,
 };
 export { OllamaEmbeddings, LocalEmbedder, ReflectScheduler, shouldRetain, formatForPrompt };
 
@@ -354,7 +356,51 @@ export class Engram {
   }
 
   // ---------------------------------------------------------------------------
-  // Working Memory — short-term session management
+  // Working Memory — primitives
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Generate an embedding for arbitrary text using the configured provider.
+   * Useful for agents that need embeddings for session matching without
+   * going through retain() or recall().
+   */
+  async embedText(text: string): Promise<Float32Array> {
+    return this.embedder.embed(text);
+  }
+
+  /**
+   * Find active working memory sessions similar to the given embedding.
+   * Returns candidates sorted by similarity (highest first).
+   *
+   * This is the low-level primitive — it does NOT make a match/new decision.
+   * The agent's adapter layer uses these results to implement its own policy.
+   */
+  findSimilarSessions(embedding: Float32Array, limit: number = 3): SessionCandidate[] {
+    const embeddingBuffer = Buffer.from(embedding.buffer);
+    try {
+      const rows = this.db.prepare(`
+        SELECT id, data_json,
+               vec_distance_cosine(topic_embedding, ?) AS distance
+        FROM working_memory
+        WHERE (expires_at IS NULL OR expires_at > datetime('now'))
+          AND topic_embedding IS NOT NULL
+        ORDER BY distance ASC
+        LIMIT ?
+      `).all(embeddingBuffer, limit) as Array<{ id: string; data_json: string; distance: number }>;
+
+      return rows.map((c) => ({
+        id: c.id,
+        state: JSON.parse(c.data_json) as WorkingMemoryState,
+        similarity: 1 - (c.distance ?? 1),
+      }));
+    } catch {
+      // sqlite-vec not loaded — no vector matching available
+      return [];
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Working Memory — session management
   // ---------------------------------------------------------------------------
 
   /**
@@ -368,35 +414,14 @@ export class Engram {
     options: WorkingMemoryOptions = {}
   ): Promise<WorkingSessionResult> {
     const maxActive = Math.max(1, options.maxActive ?? 5);
-    const threshold = Math.max(0, Math.min(options.threshold ?? 0.72, 1));
+    const threshold = Math.max(0, Math.min(options.threshold ?? 0.55, 1));
 
     // 1. Embed the incoming message
-    const msgEmbedding = await this.embedder.embed(message);
+    const msgEmbedding = await this.embedText(message);
     const embeddingBuffer = Buffer.from(msgEmbedding.buffer);
 
     // 2. Find active sessions and score by similarity
-    let candidates: Array<{ id: string; data_json: string; similarity: number }>;
-    try {
-      const rows = this.db.prepare(`
-        SELECT id, data_json,
-               vec_distance_cosine(topic_embedding, ?) AS distance
-        FROM working_memory
-        WHERE (expires_at IS NULL OR expires_at > datetime('now'))
-          AND topic_embedding IS NOT NULL
-        ORDER BY distance ASC
-        LIMIT 3
-      `).all(embeddingBuffer) as Array<{ id: string; data_json: string; distance: number }>;
-
-      // Convert distance to similarity (cosine distance → similarity = 1 - distance)
-      candidates = rows.map((c) => ({
-        id: c.id,
-        data_json: c.data_json,
-        similarity: 1 - (c.distance ?? 1),
-      }));
-    } catch {
-      // sqlite-vec not loaded — no vector matching available
-      candidates = [];
-    }
+    const candidates = this.findSimilarSessions(msgEmbedding, 3);
 
     // 3. Pick best match or create new session
     let session: WorkingMemoryState;
@@ -406,7 +431,7 @@ export class Engram {
     const best = candidates[0];
     if (best && best.similarity >= threshold) {
       // Resume existing session
-      session = JSON.parse(best.data_json) as WorkingMemoryState;
+      session = best.state;
       confidence = best.similarity;
       reason = 'match';
 
@@ -444,10 +469,11 @@ export class Engram {
   }
 
   /**
-   * Create a new working memory session from a message.
-   * Internal — called by inferWorkingSession when no match is found.
+   * Create a new working memory session from a message and pre-computed embedding.
+   * Called internally by inferWorkingSession, but exposed for agents that
+   * implement custom session resolution using the primitives.
    */
-  private async createWorkingSession(
+  async createWorkingSession(
     message: string,
     embeddingBuffer: Buffer
   ): Promise<WorkingMemoryState> {

@@ -15,6 +15,9 @@
       "types": "./dist/mcp-tools.d.ts"
     }
   },
+  "bin": {
+    "engram-mcp": "./dist/mcp-server.js"
+  },
   "files": [
     "dist"
   ],
@@ -28,6 +31,7 @@
     "example": "tsx examples/basic-usage.ts"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1",
     "@xenova/transformers": "^2.17.2",
     "better-sqlite3": "^9.4.3",
     "sqlite-vec": "^0.1.6"

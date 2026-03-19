@@ -18,10 +18,18 @@ export interface WorkingMemoryState {
 export interface WorkingMemoryOptions {
   /** Max active (non-expired) sessions to keep. Oldest auto-snapshot when exceeded. Default: 5 */
   maxActive?: number;
-  /** Cosine similarity threshold for matching an existing session. Default: 0.72 */
+  /** Cosine similarity threshold for matching an existing session. Default: 0.55
+   *  Calibrated for nomic-embed-text 768d via Ollama. Lower = more aggressive matching,
+   *  higher = more new sessions. Range: 0.0–1.0 */
   threshold?: number;
   /** Hours before an untouched session auto-expires. Default: 48 */
   expireAfterHours?: number;
+}
+
+export interface SessionCandidate {
+  id: string;
+  state: WorkingMemoryState;
+  similarity: number;
 }
 
 export interface WorkingSessionResult {

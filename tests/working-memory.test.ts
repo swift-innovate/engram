@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { Engram } from '../src/engram.js';
+import { Engram, type SessionCandidate } from '../src/engram.js';
 import { MockEmbedder, tmpDbPath, cleanupDb } from './helpers.js';
 
 describe('Working Memory', () => {
@@ -221,6 +221,89 @@ describe('Working Memory', () => {
 
     expect(expired).toBeGreaterThanOrEqual(1);
     expect(engram.getWorkingSession(result.session.id)).toBeNull();
+  });
+
+  // ── Primitives: embedText + findSimilarSessions ──────────────────────
+
+  it('embedText() returns a Float32Array of correct dimensions', async () => {
+    dbPath = tmpDbPath();
+    engram = await Engram.create(dbPath, { embedder: new MockEmbedder() });
+
+    const embedding = await engram.embedText('test embedding text');
+
+    expect(embedding).toBeInstanceOf(Float32Array);
+    expect(embedding.length).toBeGreaterThan(0);
+  });
+
+  it('findSimilarSessions() returns empty array when no sessions exist', async () => {
+    dbPath = tmpDbPath();
+    engram = await Engram.create(dbPath, { embedder: new MockEmbedder() });
+
+    const embedding = await engram.embedText('anything');
+    const candidates = engram.findSimilarSessions(embedding);
+
+    expect(candidates).toEqual([]);
+  });
+
+  it('findSimilarSessions() returns candidates sorted by similarity descending', async () => {
+    dbPath = tmpDbPath();
+    engram = await Engram.create(dbPath, { embedder: new MockEmbedder() });
+
+    // Create two sessions with different topics
+    await engram.inferWorkingSession('check my email for updates');
+    await engram.inferWorkingSession('ZZZZ plant roses in the garden ZZZZ', { threshold: 0.999 });
+
+    const embedding = await engram.embedText('check my email for updates');
+    const candidates = engram.findSimilarSessions(embedding);
+
+    expect(candidates.length).toBe(2);
+    expect(candidates[0].similarity).toBeGreaterThanOrEqual(candidates[1].similarity);
+    // Each candidate has parsed state, not raw JSON
+    expect(candidates[0].state).toHaveProperty('id');
+    expect(candidates[0].state).toHaveProperty('goal');
+  });
+
+  it('findSimilarSessions() excludes expired sessions', async () => {
+    dbPath = tmpDbPath();
+    engram = await Engram.create(dbPath, { embedder: new MockEmbedder() });
+
+    const result = await engram.inferWorkingSession('session to expire');
+    engram.clearWorkingSession(result.session.id);
+
+    const embedding = await engram.embedText('session to expire');
+    const candidates = engram.findSimilarSessions(embedding);
+
+    expect(candidates).toEqual([]);
+  });
+
+  it('findSimilarSessions() respects limit parameter', async () => {
+    dbPath = tmpDbPath();
+    engram = await Engram.create(dbPath, { embedder: new MockEmbedder() });
+
+    await engram.inferWorkingSession('AAAA first topic alpha');
+    await engram.inferWorkingSession('BBBB second topic beta', { threshold: 0.999 });
+    await engram.inferWorkingSession('CCCC third topic gamma', { threshold: 0.999 });
+
+    const embedding = await engram.embedText('first topic');
+    const candidates = engram.findSimilarSessions(embedding, 1);
+
+    expect(candidates.length).toBe(1);
+  });
+
+  it('createWorkingSession() creates a session accessible via findSimilarSessions', async () => {
+    dbPath = tmpDbPath();
+    engram = await Engram.create(dbPath, { embedder: new MockEmbedder() });
+
+    const embedding = await engram.embedText('custom session topic');
+    const embeddingBuffer = Buffer.from(embedding.buffer);
+    const session = await engram.createWorkingSession('custom session topic', embeddingBuffer);
+
+    expect(session.id).toMatch(/^wm-/);
+    expect(session.goal).toBe('custom session topic');
+
+    const candidates = engram.findSimilarSessions(embedding);
+    expect(candidates.length).toBe(1);
+    expect(candidates[0].id).toBe(session.id);
   });
 
   // ── Related Context ────────────────────────────────────────────────────
