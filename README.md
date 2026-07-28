@@ -809,12 +809,14 @@ async function recallContext(query, engram, formatFn) {
 ### Scheduled Reflection
 
 ```typescript
-import { ReflectScheduler } from 'engram';
+import { LocalEmbedder, ReflectScheduler } from 'engram';
 
 const scheduler = new ReflectScheduler({
   dbPath: './agent.engram',
   ollamaUrl: 'http://localhost:11434',
   reflectModel: 'llama3.1:8b',
+  // Required by the default counter-evidence audit; initialization is lazy.
+  embedder: new LocalEmbedder(),
 });
 scheduler.start(6 * 60 * 60 * 1000); // every 6 hours
 ```

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import {
   retain,
@@ -219,6 +219,32 @@ describe('retain() — concurrent deduplication', () => {
     expect(first.chunkId).not.toBe(second.chunkId);
     expect(first.deduplicated).toBeUndefined();
     expect(second.deduplicated).toBeUndefined();
+  });
+
+  it('does not return a duplicate that became inactive before its write lock', async () => {
+    const db = createTestDb();
+    const embedder = new MockEmbedder();
+    const old = await retain(db, 'Tom prefers Terraform', embedder);
+    const originalExec = db.exec.bind(db);
+    let invalidated = false;
+    const execSpy = vi.spyOn(db, 'exec').mockImplementation((sql) => {
+      if (!invalidated && sql === 'BEGIN IMMEDIATE') {
+        invalidated = true;
+        db.prepare('UPDATE chunks SET is_active = FALSE WHERE id = ?').run(
+          old.chunkId,
+        );
+      }
+      return originalExec(sql);
+    });
+
+    try {
+      const result = await retain(db, 'Tom prefers Terraform', embedder);
+      expect(result.chunkId).not.toBe(old.chunkId);
+      expect(result.deduplicated).toBeUndefined();
+    } finally {
+      execSpy.mockRestore();
+      db.close();
+    }
   });
 });
 
@@ -979,6 +1005,50 @@ describe('retainBatch() intra-batch dedup', () => {
 
     expect(results[1].deduplicated).toBe(true);
     expect(results[0].chunkId).toBe(results[1].chunkId);
+  });
+
+  it('honors per-item exact and none dedup modes', async () => {
+    const exact = await retainBatch(
+      db,
+      [
+        { text: 'Tom uses Terraform', options: { dedupMode: 'exact' } },
+        { text: ' tom  uses  terraform ', options: { dedupMode: 'exact' } },
+      ],
+      embedder,
+    );
+    const none = await retainBatch(
+      db,
+      [
+        { text: 'Tom uses Pulumi', options: { dedupMode: 'none' } },
+        { text: 'Tom uses Pulumi', options: { dedupMode: 'none' } },
+      ],
+      embedder,
+    );
+
+    expect(exact[0].chunkId).not.toBe(exact[1].chunkId);
+    expect(none[0].chunkId).not.toBe(none[1].chunkId);
+  });
+
+  it('applies supersedes from a duplicate item instead of skipping it', async () => {
+    const old = await retain(db, 'Tom uses Docker Swarm', embedder);
+    const results = await retainBatch(
+      db,
+      [
+        { text: 'Tom uses Kubernetes' },
+        {
+          text: 'Tom uses Kubernetes',
+          options: { supersedes: old.chunkId },
+        },
+      ],
+      embedder,
+    );
+
+    expect(results[0].chunkId).toBe(results[1].chunkId);
+    const oldRow = db
+      .prepare('SELECT is_active, superseded_by FROM chunks WHERE id = ?')
+      .get(old.chunkId) as { is_active: number; superseded_by: string | null };
+    expect(oldRow.is_active).toBe(0);
+    expect(oldRow.superseded_by).toBe(results[0].chunkId);
   });
 });
 

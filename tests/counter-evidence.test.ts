@@ -141,12 +141,11 @@ describe('counter-evidence pass', () => {
     cleanupDb(dbPath);
   });
 
-  it('runs the default audit but rejects one-day evidence through safe gates', async () => {
+  it('rejects one-day evidence through safe gates without invoking the audit', async () => {
     dbPath = tmpDbPath();
     const ids = await seedFacts(dbPath, [...SUPPORT_TEXTS, CONTRA_TEXT]);
     const { fetchFn, prompts } = mockFetchSequence([
       reflectResponse([newOpinion([ids[0], ids[1]])]),
-      judgeResponse([{ index: 0, ids: [] }]),
     ]);
     vi.stubGlobal('fetch', fetchFn);
 
@@ -157,11 +156,33 @@ describe('counter-evidence pass', () => {
     });
     expect(result.opinionsFormed).toBe(0);
     expect(result.opinionsRejected).toBe(1);
-    expect(result.counterEvidenceChecked).toBe(1);
-    expect(prompts).toHaveLength(2);
+    expect(result.counterEvidenceChecked).toBe(0);
+    expect(prompts).toHaveLength(1);
 
     const journal = getJournal(dbPath);
     expect(JSON.parse(journal[0].gate_results).gates).toBeDefined();
+  });
+
+  it('merges same-cycle gate rejections before auditing a later candidate', async () => {
+    dbPath = tmpDbPath();
+    const ids = await seedFacts(dbPath, [...SUPPORT_TEXTS, CONTRA_TEXT]);
+    const { fetchFn, prompts } = mockFetchSequence([
+      reflectResponse([newOpinion([ids[0]]), newOpinion([ids[1]])]),
+      judgeResponse([{ index: 1, ids: [] }]),
+    ]);
+    vi.stubGlobal('fetch', fetchFn);
+
+    const result = await reflect({
+      dbPath,
+      reflectModel: 'llama-test',
+      embedder,
+      opinionGates: { minEvidenceCount: 2, minDistinctDays: 0 },
+    });
+
+    expect(result.opinionsFormed).toBe(1);
+    expect(result.opinionsRejected).toBe(1);
+    expect(result.counterEvidenceChecked).toBe(1);
+    expect(prompts).toHaveLength(2);
   });
 
   it('records sub-threshold contradictions on the formed opinion and in the journal', async () => {

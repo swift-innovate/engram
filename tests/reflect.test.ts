@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { retain } from '../src/retain.js';
-import { reflect, reflectCatchUp } from '../src/reflect.js';
+import { reflect, reflectCatchUp, ReflectScheduler } from '../src/reflect.js';
 import {
   MockEmbedder,
   loadSchema,
@@ -1754,6 +1754,29 @@ describe('reflect()', () => {
 
       expect(JSON.parse(obs.source_entities)).toEqual([]);
     });
+  });
+});
+
+describe('ReflectScheduler', () => {
+  it('requires an embedder when the default counter-evidence audit is enabled', () => {
+    expect(
+      () =>
+        new ReflectScheduler({
+          dbPath: './agent.engram',
+          reflectModel: 'llama-test',
+        }),
+    ).toThrow('requires an embedder');
+  });
+
+  it('allows an explicit counter-evidence opt-out without an embedder', () => {
+    expect(
+      () =>
+        new ReflectScheduler({
+          dbPath: './agent.engram',
+          reflectModel: 'llama-test',
+          counterEvidence: false,
+        }),
+    ).not.toThrow();
   });
 });
 

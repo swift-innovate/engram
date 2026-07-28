@@ -96,3 +96,7 @@ before_agent_start) and any consumer-side "draft the skill file" flow.
 - [x] Expose explicit supersession in retain transports and recall output.
 - [x] Update Rust/Node CI, dependencies, documentation, license, and evaluation fixtures.
 - [x] Run the complete release verification matrix and reviewer pass.
+
+## Maintenance review (2026-07-28)
+
+- [x] Fix retain batch/lifecycle races, reflection gate ordering, and scheduler setup validation.

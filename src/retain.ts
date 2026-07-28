@@ -295,6 +295,29 @@ function promoteDuplicate(
   return { chunkId: existing.id, queued: false, deduplicated: true };
 }
 
+/**
+ * Re-resolve and promote an optimistic duplicate while holding SQLite's write
+ * lock. A deferred transaction would still allow a lifecycle writer to change
+ * the row between the active-row lookup and promotion.
+ */
+function promoteActiveDuplicate(
+  db: Database.Database,
+  text: string,
+  dedupMode: Exclude<RetainOptions['dedupMode'], 'none'>,
+  options: RetainOptions,
+): RetainResult | undefined {
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const current = findDuplicate(db, text, dedupMode);
+    const result = current ? promoteDuplicate(db, current, options) : undefined;
+    db.exec('COMMIT');
+    return result;
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+}
+
 // =============================================================================
 // Fast Retain (no LLM, just embed + store)
 // =============================================================================
@@ -335,7 +358,12 @@ export async function retain(
     const existing = findDuplicate(db, text, dedupMode);
 
     if (existing) {
-      return db.transaction(() => promoteDuplicate(db, existing, options))();
+      // The optimistic read can become stale if another connection forgets or
+      // supersedes the duplicate before this connection acquires its write
+      // lock. Re-resolve it under BEGIN IMMEDIATE: promoting a now-inactive
+      // row would otherwise return a chunk that recall can never retrieve.
+      const promoted = promoteActiveDuplicate(db, text, dedupMode, options);
+      if (promoted) return promoted;
     }
   }
 
@@ -443,34 +471,13 @@ export async function retainBatch(
   const results: RetainResult[] = [];
   const batchSize = Math.max(1, concurrency);
 
-  // Pre-deduplicate within the batch: when multiple items have the same
-  // normalized text, only the first should go through retain(). The rest
-  // get a synthetic deduplicated result. This prevents the race where
-  // concurrent retain() calls both pass the dedup check before either writes.
-  const seen = new Map<string, number>(); // normalized text → first index
-  const deduped = new Array<boolean>(items.length).fill(false);
-  for (let i = 0; i < items.length; i++) {
-    const norm = items[i].text.toLowerCase().replace(/\s+/g, ' ').trim();
-    if (seen.has(norm)) {
-      deduped[i] = true;
-    } else {
-      seen.set(norm, i);
-    }
-  }
-
-  // Chunked parallelism: embed N items concurrently, writes serialize at SQLite level
+  // Chunked parallelism: embed N items concurrently, writes serialize at
+  // SQLite level. Every item reaches retain() so its own dedupMode and
+  // lifecycle options (notably supersedes) remain authoritative.
   for (let start = 0; start < items.length; start += batchSize) {
     const batch = items.slice(start, start + batchSize);
     const batchResults = await Promise.all(
-      batch.map(({ text, options }, batchIdx) => {
-        const globalIdx = start + batchIdx;
-        if (deduped[globalIdx]) {
-          return Promise.resolve({
-            chunkId: 'dedup-pending',
-            queued: false,
-            deduplicated: true,
-          } as RetainResult);
-        }
+      batch.map(({ text, options }) => {
         return retain(
           db,
           text,
@@ -485,15 +492,6 @@ export async function retainBatch(
     );
     results.push(...batchResults);
     onProgress?.(Math.min(start + batchSize, items.length), items.length);
-  }
-
-  // Backfill dedup-pending results with the actual chunkId from their first occurrence
-  for (let i = 0; i < results.length; i++) {
-    if (results[i].chunkId === 'dedup-pending') {
-      const norm = items[i].text.toLowerCase().replace(/\s+/g, ' ').trim();
-      const firstIdx = seen.get(norm)!;
-      results[i].chunkId = results[firstIdx].chunkId;
-    }
   }
 
   // Queue world/experience items that weren't already queued during retain.

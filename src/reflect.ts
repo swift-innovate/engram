@@ -933,6 +933,17 @@ interface CounterEvidenceVerdict {
   retrievedCount: number;
 }
 
+interface GatePreflight {
+  evaluation: GateEvaluation;
+  priorRejectionId: string | null;
+}
+
+interface PendingGateRejection {
+  belief: string;
+  domain: string;
+  supportingChunks: string[];
+}
+
 /**
  * Retrieve chunks related to a candidate belief from the WHOLE durable
  * store via the standard recall pipeline. `decayHalfLifeDays: 0` on purpose:
@@ -1400,6 +1411,8 @@ export async function reflect(config: ReflectConfig): Promise<ReflectResult> {
     // unchecked (journaled as such) rather than losing the cycle's insights.
     const ceVerdicts = new Map<number, CounterEvidenceVerdict>();
     const ceEligible = new Set<number>();
+    const gatePreflights = new Map<number, GatePreflight>();
+    const pendingGateRejections: PendingGateRejection[] = [];
     // Reinforcement candidates carry the existing opinion's stated falsifier
     // (issue #38 item 3) into the judge prompt.
     const ceFalsifiers = new Map<number, string>();
@@ -1420,6 +1433,52 @@ export async function reflect(config: ReflectConfig): Promise<ReflectResult> {
           opUpdate.direction === 'reinforce' ? true : Boolean(existing);
         if (opUpdate.direction === 'reinforce' && !existing) continue; // unmatched — drops anyway
         if (isReinforcement && !onReinforce) continue;
+
+        // Formation gates are cheap, local checks. Run them before retrieval
+        // and the extra judge call so an under-evidenced candidate cannot make
+        // an otherwise useful reflection cycle fail closed.
+        if (!isReinforcement && opinionGates) {
+          const persistedPrior = findPriorRejection(
+            db,
+            opUpdate.belief,
+            opUpdate.domain,
+          );
+          // Mirror the apply transaction's merge-forward behavior for multiple
+          // same-belief updates in one LLM response. A later candidate must
+          // see the evidence just rejected by an earlier candidate before we
+          // decide whether it needs the counter-evidence audit.
+          const pendingPrior = [...pendingGateRejections]
+            .reverse()
+            .find(
+              (rejection) =>
+                rejection.domain === opUpdate.domain &&
+                (normalizeBelief(rejection.belief) ===
+                  normalizeBelief(opUpdate.belief) ||
+                  beliefSimilarity(rejection.belief, opUpdate.belief) >= 0.85),
+            );
+          const priorEvidence =
+            pendingPrior?.supportingChunks ??
+            persistedPrior?.supportingChunks ??
+            [];
+          const evaluation = evaluateOpinionGates(
+            db,
+            opinionGates,
+            opUpdate.evidence_chunk_ids,
+            priorEvidence,
+          );
+          gatePreflights.set(i, {
+            evaluation,
+            priorRejectionId: persistedPrior?.id ?? null,
+          });
+          if (!evaluation.pass) {
+            pendingGateRejections.push({
+              belief: opUpdate.belief,
+              domain: opUpdate.domain,
+              supportingChunks: evaluation.evidenceIds,
+            });
+            continue;
+          }
+        }
         ceEligible.add(i);
         if (existing?.would_change_this) {
           ceFalsifiers.set(i, existing.would_change_this);
@@ -1825,20 +1884,22 @@ export async function reflect(config: ReflectConfig): Promise<ReflectResult> {
           let supportingIds = opUpdate.evidence_chunk_ids;
           let gateResults: Record<string, unknown> | null = null;
           if (opinionGates) {
-            const prior = findPriorRejection(
-              db,
-              opUpdate.belief,
-              opUpdate.domain,
-            );
-            const evaluation = evaluateOpinionGates(
-              db,
-              opinionGates,
-              opUpdate.evidence_chunk_ids,
-              prior?.supportingChunks ?? [],
-            );
+            const preflight = gatePreflights.get(opIndex);
+            const prior = preflight
+              ? null
+              : findPriorRejection(db, opUpdate.belief, opUpdate.domain);
+            const evaluation =
+              preflight?.evaluation ??
+              evaluateOpinionGates(
+                db,
+                opinionGates,
+                opUpdate.evidence_chunk_ids,
+                prior?.supportingChunks ?? [],
+              );
             gateResults = {
               gates: evaluation.gates,
-              merged_prior_rejection: prior?.id ?? null,
+              merged_prior_rejection:
+                preflight?.priorRejectionId ?? prior?.id ?? null,
             };
             if (!evaluation.pass) {
               journal('rejected', null, opUpdate, {
@@ -2392,6 +2453,12 @@ export class ReflectScheduler {
    *   for an off-peak schedule where a burst of metered-model calls is fine.
    */
   constructor(config: CatchUpConfig, options?: { catchUp?: boolean }) {
+    if (config.counterEvidence !== false && !config.embedder) {
+      throw new Error(
+        'ReflectScheduler enables counter-evidence by default and requires an embedder. ' +
+          'Supply CatchUpConfig.embedder or set counterEvidence: false explicitly.',
+      );
+    }
     this.config = config;
     this.catchUp = options?.catchUp ?? false;
   }
