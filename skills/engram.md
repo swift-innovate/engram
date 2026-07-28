@@ -25,6 +25,7 @@ npx mcporter call engram.engram_retain text="Your fact here" memoryType=world so
 | `source` | no | Identifier (e.g. `conversation:session-123`, `file:config.yaml`) |
 | `context` | no | Freeform tag (e.g. `infrastructure`, `project:valor`) |
 | `eventTime` | no | ISO 8601 timestamp for when the event occurred |
+| `supersedes` | no | Stale `chk-…` id to atomically deactivate and link to this fact. Conflicting facts stay separate unless supplied explicitly. |
 
 ### Search memory — `engram_recall`
 
@@ -46,6 +47,10 @@ npx mcporter call engram.engram_recall query="Your search query" topK=5
 | `decayHalfLifeDays` | no | Recency decay half-life in days (default: 180) — a chunk's score is multiplied by `2^(-ageDays/decayHalfLifeDays)`. Pass `0` to disable decay entirely (long-continuity recall over older facts). |
 
 Returns: `results[]` (ranked chunks), `opinions[]` (beliefs with confidence), `observations[]` (synthesized knowledge).
+
+`opinions` and `observations` are query-scoped. The query is case-folded and
+punctuation-stripped before lexical matching; if no normalized term matches a
+synthesized entry, those arrays are empty rather than falling back globally.
 
 **`results[0]` is the best match in the highest-present source tier, not the best match overall** — re-sort by `score` locally where pure relevance is what you need. **`user_stated` memories structurally outrank `tool_result`/`external_doc` content regardless of score** — this floor holds no matter what `decayHalfLifeDays` or trust score is passed.
 
@@ -112,6 +117,14 @@ npx mcporter call engram.engram_reflect suggest=true
 ```
 
 Requires Ollama. Synthesizes observations and forms/updates opinions from accumulated facts. Pass `suggest=true` to also run the procedural-suggestion pass this cycle (see `engram_suggestions` below) — omit it (the default) to skip that pass entirely, unchanged from before.
+
+New opinions are safe by default: they require three verified chunks across two
+distinct days, then an active counter-evidence audit (`topK: 8`, contradiction
+ratio `0.5`). The audit is one extra batched generation call and fails closed:
+an unavailable or invalid judgment is journaled and retried with the facts left
+unreflected. `opinionGates` and `counterEvidence` accept either `false` for an
+explicit opt-out or an object that overrides individual safe defaults; the
+latter also supports `onReinforce` and `failOpen`.
 
 ### Forget a memory — `engram_forget`
 
@@ -190,8 +203,7 @@ Returns a list sorted by evidence strength then recency, each with `id`,
 `kind`, `summary`, `rationale`, `supportingChunks`, `evidenceCount`, `status`,
 `formedAt`, `lastReinforced`. Suggestions only form when `engram_reflect` is
 called with `suggest=true` — a plain reflect cycle skips the pass entirely.
-Formation gates default **on** (3+ evidence items across 2+ distinct days,
-stricter than opinion formation's off-by-default gates) — this is a
+Formation gates default **on** (3+ evidence items across 2+ distinct days) — this is a
 precision-over-recall feature, so an empty list after a reflect cycle is the
 normal/common outcome, not a failure.
 

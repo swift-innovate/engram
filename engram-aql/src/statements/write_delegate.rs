@@ -134,7 +134,9 @@ pub fn forget(ctx: &ExecCtx<'_>, stmt: &ForgetStmt) -> AqlResult<QueryResult> {
             .warnings
             .push("FORGET matched no active chunks; nothing forgotten".to_string());
     } else if truncated {
-        result.warnings.push(truncation_warning("FORGET", "forgotten"));
+        result
+            .warnings
+            .push(truncation_warning("FORGET", "forgotten"));
     }
     Ok(result)
 }

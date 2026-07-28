@@ -78,6 +78,10 @@ contribution + weighting factors — default: off, keeps the payload lean),
 `--decay-half-life-days <n>` (recency decay half-life in days, default 180 —
 pass `0` to disable decay entirely for long-continuity recall over older facts).
 
+Synthesized opinions and observations are query-scoped: after case-folding and
+punctuation removal, only entries with a matching normalized query term are
+returned. No match means no synthesized context, rather than a global fallback.
+
 **`results[0]` is the best match in the highest-present source tier, not the
 best match overall** — re-sort by `score` locally where pure relevance is
 what you need. **`user_stated` memories structurally outrank `tool_result`/
@@ -120,7 +124,9 @@ echo "fact text" | engram retain --json                # text from stdin if omit
 Options: `--memory-type <world|experience|observation|opinion>`,
 `--source-type <user_stated|inferred|external_doc|tool_result|agent_generated>`,
 `--trust-score <0..1>`, `--source <id>`, `--context <tag>`,
-`--event-time <iso>`, `--temporal-label <text>`. Trust guidance:
+`--event-time <iso>`, `--temporal-label <text>`, `--supersedes <chunkId>`.
+`--supersedes` atomically deactivates and links a known stale chunk; conflicting
+facts otherwise remain separate until explicitly superseded. Trust guidance:
 user_stated ≈ 0.85–0.9, agent_generated ≈ 0.6, inferred ≈ 0.5.
 
 `--json` shape: `{ "chunkId": "chk-…", "queued": true, "deduplicated"?: false, "tier1"?: { "entitiesLinked": 0, "relationsCreated": 0 } }`
@@ -242,6 +248,17 @@ patterns worth codifying as a skill/rule/workflow/config — off by default
 Formation gates default **on** (3+ evidence items across 2+ distinct days) so
 a zero-suggestion cycle after `--suggest` is the normal outcome, not a
 failure. See `suggestions` below to read what it proposed.
+
+Opinion formation is safe by default: three verified chunks across two distinct
+days plus active counter-evidence retrieval/judging (`topK: 8`, contradiction
+ratio `0.5`). That audit adds one batched generation call and fails closed, so
+an unavailable judgment leaves its facts unreflected for retry. Tune with
+`--opinion-min-evidence`, `--opinion-min-distinct-days`,
+`--opinion-min-distinct-sources`, `--counter-evidence-top-k`,
+`--counter-evidence-max-contradiction-ratio`, and
+`--counter-evidence-on-reinforce`. Use `--unsafe-opinions` or
+`--no-counter-evidence` only for explicit opt-out; `--counter-evidence-fail-open`
+restores availability-first handling for an unavailable audit.
 
 ### `process-extractions` — build the knowledge graph (needs an LLM)
 

@@ -12,7 +12,10 @@ fn count_all_episodic() {
         .query("RECALL FROM EPISODIC ALL AGGREGATE COUNT(*) AS total")
         .unwrap();
     assert!(result.success, "error: {:?}", result.error);
-    let total = result.data[0].get("total").and_then(|v| v.as_i64()).unwrap();
+    let total = result.data[0]
+        .get("total")
+        .and_then(|v| v.as_i64())
+        .unwrap();
     assert_eq!(total, 4); // 4 episodic records in seed
 }
 
@@ -24,7 +27,10 @@ fn count_filtered_by_context() {
         .query(r#"RECALL FROM EPISODIC WHERE context = "ops" AGGREGATE COUNT(*) AS total"#)
         .unwrap();
     assert!(result.success, "error: {:?}", result.error);
-    let total = result.data[0].get("total").and_then(|v| v.as_i64()).unwrap();
+    let total = result.data[0]
+        .get("total")
+        .and_then(|v| v.as_i64())
+        .unwrap();
     assert_eq!(total, 3);
 }
 
@@ -54,8 +60,14 @@ fn min_max_trust_score() {
         )
         .unwrap();
     assert!(result.success, "error: {:?}", result.error);
-    let min = result.data[0].get("min_t").and_then(|v| v.as_f64()).unwrap();
-    let max = result.data[0].get("max_t").and_then(|v| v.as_f64()).unwrap();
+    let min = result.data[0]
+        .get("min_t")
+        .and_then(|v| v.as_f64())
+        .unwrap();
+    let max = result.data[0]
+        .get("max_t")
+        .and_then(|v| v.as_f64())
+        .unwrap();
     assert!((min - 0.7).abs() < 0.001);
     assert!((max - 0.9).abs() < 0.001);
 }
@@ -96,7 +108,10 @@ fn sum_trust_score() {
         .query("RECALL FROM EPISODIC ALL AGGREGATE SUM(trust_score) AS total_trust")
         .unwrap();
     assert!(result.success, "error: {:?}", result.error);
-    let sum = result.data[0].get("total_trust").and_then(|v| v.as_f64()).unwrap();
+    let sum = result.data[0]
+        .get("total_trust")
+        .and_then(|v| v.as_f64())
+        .unwrap();
     // 0.9 + 0.7 + 0.8 + 0.85 = 3.25
     assert!((sum - 3.25).abs() < 0.0001, "sum was: {}", sum);
 }
@@ -120,14 +135,13 @@ fn having_with_unsupported_operator_errors() {
     let exec = Executor::from_connection(conn).unwrap();
     // HAVING with CONTAINS should return an error result (not silently pass)
     let result = exec
-        .query(
-            "RECALL FROM EPISODIC ALL AGGREGATE COUNT(*) AS total HAVING total CONTAINS \"2\"",
-        )
+        .query("RECALL FROM EPISODIC ALL AGGREGATE COUNT(*) AS total HAVING total CONTAINS \"2\"")
         .unwrap();
     assert!(!result.success);
     let err = result.error.unwrap();
     assert!(
         err.contains("HAVING") || err.contains("operator"),
-        "unexpected error: {}", err
+        "unexpected error: {}",
+        err
     );
 }

@@ -141,11 +141,12 @@ describe('counter-evidence pass', () => {
     cleanupDb(dbPath);
   });
 
-  it('is off by default: no judge call, no counter-evidence annotation', async () => {
+  it('runs the default audit but rejects one-day evidence through safe gates', async () => {
     dbPath = tmpDbPath();
     const ids = await seedFacts(dbPath, [...SUPPORT_TEXTS, CONTRA_TEXT]);
     const { fetchFn, prompts } = mockFetchSequence([
       reflectResponse([newOpinion([ids[0], ids[1]])]),
+      judgeResponse([{ index: 0, ids: [] }]),
     ]);
     vi.stubGlobal('fetch', fetchFn);
 
@@ -154,12 +155,13 @@ describe('counter-evidence pass', () => {
       reflectModel: 'llama-test',
       embedder,
     });
-    expect(result.opinionsFormed).toBe(1);
-    expect(result.counterEvidenceChecked).toBe(0);
-    expect(prompts).toHaveLength(1); // main reflect call only
+    expect(result.opinionsFormed).toBe(0);
+    expect(result.opinionsRejected).toBe(1);
+    expect(result.counterEvidenceChecked).toBe(1);
+    expect(prompts).toHaveLength(2);
 
     const journal = getJournal(dbPath);
-    expect(journal[0].gate_results).toBeNull();
+    expect(JSON.parse(journal[0].gate_results).gates).toBeDefined();
   });
 
   it('records sub-threshold contradictions on the formed opinion and in the journal', async () => {
@@ -176,6 +178,7 @@ describe('counter-evidence pass', () => {
       dbPath,
       reflectModel: 'llama-test',
       embedder,
+      opinionGates: false,
       counterEvidence: {},
     });
     // ratio 1/(2+1) = 0.33 < 0.5 → forms, contradictions ride along
@@ -210,6 +213,7 @@ describe('counter-evidence pass', () => {
       dbPath,
       reflectModel: 'llama-test',
       embedder,
+      opinionGates: false,
       counterEvidence: {},
     });
     // ratio 2/(1+2) = 0.67 > 0.5 → blocked
@@ -250,6 +254,7 @@ describe('counter-evidence pass', () => {
       dbPath,
       reflectModel: 'llama-test',
       embedder,
+      opinionGates: false,
       counterEvidence: { maxContradictionRatio: 1 },
     });
     expect(result.opinionsFormed).toBe(1);
@@ -266,7 +271,13 @@ describe('counter-evidence pass', () => {
       reflectResponse([newOpinion([ids[0], ids[1]])]),
     ]);
     vi.stubGlobal('fetch', first.fetchFn);
-    await reflect({ dbPath, reflectModel: 'llama-test', embedder });
+    await reflect({
+      dbPath,
+      reflectModel: 'llama-test',
+      embedder,
+      opinionGates: false,
+      counterEvidence: false,
+    });
     const confidenceBefore = getOpinions(dbPath)[0].confidence;
 
     // Cycle 2: reinforce; judge finds a contradiction.
@@ -296,6 +307,7 @@ describe('counter-evidence pass', () => {
       dbPath,
       reflectModel: 'llama-test',
       embedder,
+      opinionGates: false,
       counterEvidence: { onReinforce: true },
     });
     expect(result.opinionsReinforced).toBe(1);
@@ -328,6 +340,7 @@ describe('counter-evidence pass', () => {
       dbPath,
       reflectModel: 'llama-test',
       embedder,
+      opinionGates: false,
       counterEvidence: {},
     });
     expect(result.opinionsFormed).toBe(1);
@@ -336,7 +349,7 @@ describe('counter-evidence pass', () => {
     expect(opinion.last_challenged).toBeNull();
   });
 
-  it('fails open when the judge call returns garbage, journaling the candidate as unchecked', async () => {
+  it('fails open only when explicitly requested, journaling the candidate as unchecked', async () => {
     dbPath = tmpDbPath();
     const ids = await seedFacts(dbPath, [...SUPPORT_TEXTS, CONTRA_TEXT]);
     const { fetchFn } = mockFetchSequence([
@@ -349,7 +362,8 @@ describe('counter-evidence pass', () => {
       dbPath,
       reflectModel: 'llama-test',
       embedder,
-      counterEvidence: {},
+      opinionGates: false,
+      counterEvidence: { failOpen: true },
     });
     expect(result.opinionsFormed).toBe(1); // insights not lost
     expect(result.counterEvidenceChecked).toBe(0);
@@ -357,6 +371,42 @@ describe('counter-evidence pass', () => {
     const [row] = getJournal(dbPath);
     expect(row.action).toBe('formed');
     expect(JSON.parse(row.gate_results).counter_evidence.checked).toBe(false);
+  });
+
+  it('fails closed by default when the judge output is invalid and retries its facts', async () => {
+    dbPath = tmpDbPath();
+    const ids = await seedFacts(dbPath, [...SUPPORT_TEXTS, CONTRA_TEXT]);
+    const { fetchFn } = mockFetchSequence([
+      reflectResponse([newOpinion([ids[0], ids[1]])]),
+      'this is not json at all',
+    ]);
+    vi.stubGlobal('fetch', fetchFn);
+
+    const result = await reflect({
+      dbPath,
+      reflectModel: 'llama-test',
+      embedder,
+      opinionGates: false,
+      counterEvidence: {},
+    });
+    expect(result.status).toBe('partial');
+    expect(result.opinionsFormed).toBe(0);
+    expect(result.error).toContain('judge');
+    const [row] = getJournal(dbPath);
+    expect(JSON.parse(row.gate_results).reason).toBe(
+      'counter_evidence_unavailable',
+    );
+
+    const db = new Database(dbPath);
+    const unreflected = (
+      db
+        .prepare(
+          'SELECT COUNT(*) AS count FROM chunks WHERE reflected_at IS NULL',
+        )
+        .get() as { count: number }
+    ).count;
+    db.close();
+    expect(unreflected).toBe(ids.length);
   });
 
   it("excludes the candidate's own cited evidence from the judge pool", async () => {
@@ -373,6 +423,7 @@ describe('counter-evidence pass', () => {
       dbPath,
       reflectModel: 'llama-test',
       embedder,
+      opinionGates: false,
       counterEvidence: {},
     });
     expect(prompts).toHaveLength(2);
@@ -394,6 +445,7 @@ describe('counter-evidence pass', () => {
       dbPath,
       reflectModel: 'llama-test',
       embedder,
+      opinionGates: false,
       counterEvidence: {},
     });
 
@@ -415,29 +467,28 @@ describe('counter-evidence pass', () => {
     expect(second.prompts[0]).toContain('contradicted by 1 chunk(s)');
   });
 
-  it('skips the pass with a warning when no embedder is available', async () => {
+  it('fails clearly without an embedder unless counter-evidence is explicitly disabled', async () => {
     dbPath = tmpDbPath();
     const ids = await seedFacts(dbPath, [...SUPPORT_TEXTS, CONTRA_TEXT]);
     const { fetchFn, prompts } = mockFetchSequence([
       reflectResponse([newOpinion([ids[0], ids[1]])]),
     ]);
     vi.stubGlobal('fetch', fetchFn);
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await expect(
+      reflect({ dbPath, reflectModel: 'llama-test', opinionGates: false }),
+    ).rejects.toThrow('requires an embedder');
+    expect(prompts).toHaveLength(0);
 
     const result = await reflect({
       dbPath,
       reflectModel: 'llama-test',
-      counterEvidence: {}, // configured, but no embedder
+      opinionGates: false,
+      counterEvidence: false,
     });
     expect(result.opinionsFormed).toBe(1);
     expect(result.counterEvidenceChecked).toBe(0);
-    expect(prompts).toHaveLength(1); // no judge call
-    expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining('no embedder'),
-    );
-    warnSpy.mockRestore();
+    expect(prompts).toHaveLength(1);
 
-    // Not annotated as unchecked — the candidate was never in scope.
     const [row] = getJournal(dbPath);
     expect(row.gate_results).toBeNull();
   });

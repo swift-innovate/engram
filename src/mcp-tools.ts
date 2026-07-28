@@ -84,6 +84,11 @@ export const ENGRAM_TOOLS = [
           description:
             'Human-readable time reference, e.g. "last spring", "Q4 2025"',
         },
+        supersedes: {
+          type: 'string',
+          description:
+            'Chunk id of an outdated fact to atomically deactivate and link to this retained fact. Conflicting facts remain separate unless this is supplied explicitly.',
+        },
       },
       required: ['text'],
     },
@@ -170,7 +175,7 @@ export const ENGRAM_TOOLS = [
   {
     name: 'engram_reflect' as const,
     description:
-      'Run a reflection cycle: processes unreflected memories through the LLM to synthesize observations and update opinions. Requires Ollama. Typically run on a schedule rather than per-turn. Pass suggest: true to also run the procedural-suggestion pass (recurring corrections/friction/workflows worth codifying as a skill/rule/workflow/config) — formation gates default on (3+ evidence items across 2+ distinct days). Results are read separately via engram_suggestions, not returned inline here.',
+      'Run a reflection cycle: processes unreflected memories through the LLM to synthesize observations and update opinions. New opinions are safe by default: 3 verified chunks over 2 days plus active counter-evidence retrieval/judging (one extra generation call; unavailable judgments retry fail-closed). Pass opinionGates:false and/or counterEvidence:false only for an explicit opt-out. Requires a configured generation model. Pass suggest:true to also run the procedural-suggestion pass.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -178,6 +183,41 @@ export const ENGRAM_TOOLS = [
           type: 'boolean',
           description:
             'Also run the procedural-suggestion pass this cycle (default: false). Gates default to 3+ evidence items across 2+ distinct days before a suggestion forms.',
+        },
+        opinionGates: {
+          description:
+            'Safe by default ({minEvidenceCount:3,minDistinctDays:2}). Pass false to disable gates explicitly, or an object to override individual thresholds.',
+          oneOf: [
+            { type: 'boolean', enum: [false] },
+            {
+              type: 'object',
+              properties: {
+                minEvidenceCount: { type: 'number', minimum: 0 },
+                minDistinctDays: { type: 'number', minimum: 0 },
+                minDistinctSources: { type: 'number', minimum: 0 },
+              },
+            },
+          ],
+        },
+        counterEvidence: {
+          description:
+            'Safe by default ({topK:8,maxContradictionRatio:0.5,failOpen:false}); costs one batched judge call. Pass false to disable, or an object to override.',
+          oneOf: [
+            { type: 'boolean', enum: [false] },
+            {
+              type: 'object',
+              properties: {
+                topK: { type: 'number', minimum: 1 },
+                maxContradictionRatio: {
+                  type: 'number',
+                  minimum: 0,
+                  maximum: 1,
+                },
+                onReinforce: { type: 'boolean' },
+                failOpen: { type: 'boolean' },
+              },
+            },
+          ],
         },
       },
     },
@@ -615,6 +655,10 @@ function filterStrings(arr: unknown): string[] | undefined {
   return filtered.length > 0 ? filtered : undefined;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 /** Assert a required string field is a non-empty string. Returns error result if invalid. */
 function requireString(
   v: unknown,
@@ -671,6 +715,10 @@ export function createEngramToolHandler(engram: Engram) {
               typeof input.temporalLabel === 'string'
                 ? input.temporalLabel
                 : undefined,
+            supersedes:
+              typeof input.supersedes === 'string'
+                ? input.supersedes
+                : undefined,
           };
           const result = await engram.retain(textCheck.value, opts);
           return { content: [{ type: 'text', text: JSON.stringify(result) }] };
@@ -715,9 +763,47 @@ export function createEngramToolHandler(engram: Engram) {
         }
 
         case 'engram_reflect': {
-          const result = await engram.reflect(
-            input.suggest === true ? { suggestions: {} } : undefined,
-          );
+          const gates = isRecord(input.opinionGates)
+            ? {
+                minEvidenceCount: clampNonNegative(
+                  input.opinionGates.minEvidenceCount,
+                ),
+                minDistinctDays: clampNonNegative(
+                  input.opinionGates.minDistinctDays,
+                ),
+                minDistinctSources: clampNonNegative(
+                  input.opinionGates.minDistinctSources,
+                ),
+              }
+            : input.opinionGates === false
+              ? false
+              : undefined;
+          const counterEvidence = isRecord(input.counterEvidence)
+            ? {
+                topK:
+                  typeof input.counterEvidence.topK === 'number'
+                    ? Math.max(1, Math.floor(input.counterEvidence.topK))
+                    : undefined,
+                maxContradictionRatio: clampTrust(
+                  input.counterEvidence.maxContradictionRatio,
+                ),
+                onReinforce:
+                  typeof input.counterEvidence.onReinforce === 'boolean'
+                    ? input.counterEvidence.onReinforce
+                    : undefined,
+                failOpen:
+                  typeof input.counterEvidence.failOpen === 'boolean'
+                    ? input.counterEvidence.failOpen
+                    : undefined,
+              }
+            : input.counterEvidence === false
+              ? false
+              : undefined;
+          const result = await engram.reflect({
+            ...(input.suggest === true ? { suggestions: {} } : {}),
+            ...(gates !== undefined ? { opinionGates: gates } : {}),
+            ...(counterEvidence !== undefined ? { counterEvidence } : {}),
+          });
           return {
             content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
           };

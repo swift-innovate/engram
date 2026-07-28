@@ -117,7 +117,10 @@ fn recall_from_all_emits_phase1_scope_warning() {
     let result = exec.query("RECALL FROM ALL ALL LIMIT 10").unwrap();
     assert!(result.success, "error: {:?}", result.error);
     assert!(
-        result.warnings.iter().any(|w| w.contains("ALL memory type")),
+        result
+            .warnings
+            .iter()
+            .any(|w| w.contains("ALL memory type")),
         "expected ALL Phase 1 scope warning, got: {:?}",
         result.warnings
     );
@@ -132,7 +135,10 @@ fn recall_from_all_warning_also_fires_on_aggregate_path() {
         .unwrap();
     assert!(result.success, "error: {:?}", result.error);
     assert!(
-        result.warnings.iter().any(|w| w.contains("ALL memory type")),
+        result
+            .warnings
+            .iter()
+            .any(|w| w.contains("ALL memory type")),
         "expected ALL Phase 1 scope warning on aggregate path, got: {:?}",
         result.warnings
     );
@@ -145,7 +151,10 @@ fn recall_from_episodic_does_not_emit_all_warning() {
     let result = exec.query("RECALL FROM EPISODIC ALL LIMIT 10").unwrap();
     assert!(result.success, "error: {:?}", result.error);
     assert!(
-        !result.warnings.iter().any(|w| w.contains("ALL memory type")),
+        !result
+            .warnings
+            .iter()
+            .any(|w| w.contains("ALL memory type")),
         "EPISODIC query should not contain ALL scope warning, got: {:?}",
         result.warnings
     );

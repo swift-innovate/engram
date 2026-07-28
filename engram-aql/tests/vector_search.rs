@@ -299,7 +299,8 @@ fn like_on_non_chunks_memory_type_warns_empty() {
         result
             .warnings
             .iter()
-            .any(|w| w.contains("SEMANTIC/EPISODIC") || w.contains("no embeddings")
+            .any(|w| w.contains("SEMANTIC/EPISODIC")
+                || w.contains("no embeddings")
                 || w.contains("stores none")),
         "should warn vector search is chunks-only; warnings: {:?}",
         result.warnings

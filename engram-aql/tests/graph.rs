@@ -49,9 +49,7 @@ fn follow_links_expands_to_related_chunks() {
     let exec = Executor::from_connection(conn).unwrap();
     // e-001 (episodic) → ent-deploy → uses_pattern → ent-bluegreen → s-001 (semantic)
     let result = exec
-        .query(
-            r#"RECALL FROM EPISODIC KEY id = "e-001" FOLLOW LINKS TYPE "uses_pattern" DEPTH 1"#,
-        )
+        .query(r#"RECALL FROM EPISODIC KEY id = "e-001" FOLLOW LINKS TYPE "uses_pattern" DEPTH 1"#)
         .unwrap();
     assert!(result.success, "error: {:?}", result.error);
     // Should return the base e-001 plus s-001 reached via graph traversal
@@ -88,9 +86,7 @@ fn follow_links_crosses_memory_types() {
     let conn = common::seeded_db();
     let exec = Executor::from_connection(conn).unwrap();
     let result = exec
-        .query(
-            r#"RECALL FROM EPISODIC KEY id = "e-001" FOLLOW LINKS TYPE "uses_pattern" DEPTH 1"#,
-        )
+        .query(r#"RECALL FROM EPISODIC KEY id = "e-001" FOLLOW LINKS TYPE "uses_pattern" DEPTH 1"#)
         .unwrap();
     assert!(result.success);
 

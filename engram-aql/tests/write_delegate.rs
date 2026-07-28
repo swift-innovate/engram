@@ -70,7 +70,11 @@ fn store_then_recall_sees_new_chunk() {
         .data
         .iter()
         .any(|row| row["text"].as_str() == Some("terraform manages cloud infrastructure"));
-    assert!(found, "RECALL should see the stored chunk; got {:?}", recall.data);
+    assert!(
+        found,
+        "RECALL should see the stored chunk; got {:?}",
+        recall.data
+    );
 }
 
 #[test]
@@ -89,7 +93,10 @@ fn stored_chunk_is_semantically_searchable() {
     // A string-bound LIKE embeds the query through the bridge and ranks by
     // cosine distance — this only works if STORE embedded the chunk.
     let mut vars: BTreeMap<String, Value> = BTreeMap::new();
-    vars.insert("q".to_string(), json!("infrastructure provisioning tooling"));
+    vars.insert(
+        "q".to_string(),
+        json!("infrastructure provisioning tooling"),
+    );
     let recall = exec
         .query_with_vars("RECALL FROM SEMANTIC LIKE $q", vars)
         .unwrap();
@@ -124,7 +131,10 @@ fn forget_drops_chunk_from_recall() {
     assert!(forget.success, "FORGET failed: {:?}", forget.error);
 
     let recall = exec.query("RECALL FROM SEMANTIC ALL LIMIT 50").unwrap();
-    let still_present = recall.data.iter().any(|row| row["id"].as_str() == Some(&id));
+    let still_present = recall
+        .data
+        .iter()
+        .any(|row| row["id"].as_str() == Some(&id));
     assert!(!still_present, "forgotten chunk must not appear in recall");
 }
 

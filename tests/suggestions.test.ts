@@ -270,6 +270,8 @@ describe('procedural suggestions (issue #39)', () => {
     vi.stubGlobal('fetch', fetchFn);
 
     const result = await reflect({
+      counterEvidence: false,
+      opinionGates: false,
       dbPath,
       reflectModel: 'llama-test',
       embedder,
@@ -298,6 +300,8 @@ describe('procedural suggestions (issue #39)', () => {
     vi.stubGlobal('fetch', fetchFn);
 
     const result = await reflect({
+      counterEvidence: false,
+      opinionGates: false,
       dbPath,
       reflectModel: 'llama-test',
       embedder,
@@ -339,6 +343,8 @@ describe('procedural suggestions (issue #39)', () => {
     vi.stubGlobal('fetch', fetchFn);
 
     const result = await reflect({
+      counterEvidence: false,
+      opinionGates: false,
       dbPath,
       reflectModel: 'llama-test',
       embedder,
@@ -375,6 +381,8 @@ describe('procedural suggestions (issue #39)', () => {
     vi.stubGlobal('fetch', fetchFn);
 
     const result = await reflect({
+      counterEvidence: false,
+      opinionGates: false,
       dbPath,
       reflectModel: 'llama-test',
       embedder,
@@ -409,6 +417,8 @@ describe('procedural suggestions (issue #39)', () => {
     expect(activeFlags.every((r) => r.is_active === 0)).toBe(true);
 
     const result = await reflect({
+      counterEvidence: false,
+      opinionGates: false,
       dbPath,
       reflectModel: 'llama-test',
       embedder,
@@ -433,6 +443,8 @@ describe('procedural suggestions (issue #39)', () => {
     vi.stubGlobal('fetch', first.fetchFn);
 
     const resultA = await reflect({
+      counterEvidence: false,
+      opinionGates: false,
       dbPath,
       reflectModel: 'llama-test',
       embedder,
@@ -452,6 +464,8 @@ describe('procedural suggestions (issue #39)', () => {
     vi.stubGlobal('fetch', second.fetchFn);
 
     const resultB = await reflect({
+      counterEvidence: false,
+      opinionGates: false,
       dbPath,
       reflectModel: 'llama-test',
       embedder,
@@ -483,6 +497,8 @@ describe('procedural suggestions (issue #39)', () => {
     const first = mockFetchSequence([suggestResponse([candidateA])]);
     vi.stubGlobal('fetch', first.fetchFn);
     await reflect({
+      counterEvidence: false,
+      opinionGates: false,
       dbPath,
       reflectModel: 'llama-test',
       embedder,
@@ -507,6 +523,8 @@ describe('procedural suggestions (issue #39)', () => {
     const second = mockFetchSequence([suggestResponse([candidateB])]);
     vi.stubGlobal('fetch', second.fetchFn);
     const resultB = await reflect({
+      counterEvidence: false,
+      opinionGates: false,
       dbPath,
       reflectModel: 'llama-test',
       embedder,
@@ -542,6 +560,8 @@ describe('procedural suggestions (issue #39)', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     const resultA = await reflect({
+      counterEvidence: false,
+      opinionGates: false,
       dbPath,
       reflectModel: 'llama-test',
       // no embedder
@@ -569,6 +589,8 @@ describe('procedural suggestions (issue #39)', () => {
     vi.stubGlobal('fetch', second.fetchFn);
 
     const resultB = await reflect({
+      counterEvidence: false,
+      opinionGates: false,
       dbPath,
       reflectModel: 'llama-test',
       suggestions: { gates: { minEvidenceCount: 3 } },
@@ -595,6 +617,8 @@ describe('procedural suggestions (issue #39)', () => {
     const fetchA = mockFetchSequence([suggestResponse([candidateA])]);
     vi.stubGlobal('fetch', fetchA.fetchFn);
     await reflect({
+      counterEvidence: false,
+      opinionGates: false,
       dbPath,
       reflectModel: 'llama-test',
       embedder,
@@ -618,6 +642,8 @@ describe('procedural suggestions (issue #39)', () => {
     const fetchB = mockFetchSequence([suggestResponse([candidateB])]);
     vi.stubGlobal('fetch', fetchB.fetchFn);
     const resultB = await reflect({
+      counterEvidence: false,
+      opinionGates: false,
       dbPath,
       reflectModel: 'llama-test',
       embedder,
@@ -652,6 +678,8 @@ describe('procedural suggestions (issue #39)', () => {
     const fetchC = mockFetchSequence([suggestResponse([candidateC])]);
     vi.stubGlobal('fetch', fetchC.fetchFn);
     const resultC = await reflect({
+      counterEvidence: false,
+      opinionGates: false,
       dbPath,
       reflectModel: 'llama-test',
       embedder,
@@ -675,6 +703,8 @@ describe('procedural suggestions (issue #39)', () => {
     vi.stubGlobal('fetch', fetchFn);
 
     const result = await reflect({
+      counterEvidence: false,
+      opinionGates: false,
       dbPath,
       reflectModel: 'llama-test',
       embedder,
@@ -692,6 +722,8 @@ describe('procedural suggestions (issue #39)', () => {
     const second = mockFetchSequence(['SHOULD NOT BE CALLED']);
     vi.stubGlobal('fetch', second.fetchFn);
     const result2 = await reflect({
+      counterEvidence: false,
+      opinionGates: false,
       dbPath,
       reflectModel: 'llama-test',
       embedder,
@@ -712,6 +744,8 @@ describe('procedural suggestions (issue #39)', () => {
     ]);
     vi.stubGlobal('fetch', first.fetchFn);
     const result1 = await reflect({
+      counterEvidence: false,
+      opinionGates: false,
       dbPath,
       reflectModel: 'llama-test',
       embedder,
@@ -730,6 +764,8 @@ describe('procedural suggestions (issue #39)', () => {
     const second = mockFetchSequence(['still not json']);
     vi.stubGlobal('fetch', second.fetchFn);
     const result2 = await reflect({
+      counterEvidence: false,
+      opinionGates: false,
       dbPath,
       reflectModel: 'llama-test',
       embedder,
@@ -781,6 +817,8 @@ describe('procedural suggestions (issue #39)', () => {
     const { fetchFn, prompts } = mockFetchSequence([suggestResponse([])]);
     vi.stubGlobal('fetch', fetchFn);
     await reflect({
+      counterEvidence: false,
+      opinionGates: false,
       dbPath,
       reflectModel: 'llama-test',
       embedder,
@@ -819,6 +857,8 @@ describe('procedural suggestions (issue #39)', () => {
     vi.stubGlobal('fetch', fetchFn);
 
     const result = await reflect({
+      counterEvidence: false,
+      opinionGates: false,
       dbPath,
       reflectModel: 'llama-test',
       embedder,
@@ -890,6 +930,8 @@ describe('procedural suggestions (issue #39)', () => {
     vi.stubGlobal('fetch', fetchFn);
 
     const result = await reflectCatchUp({
+      counterEvidence: false,
+      opinionGates: false,
       dbPath,
       reflectModel: 'llama-test',
       embedder,

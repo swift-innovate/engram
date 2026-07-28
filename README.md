@@ -8,7 +8,7 @@
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Node.js >= 20](https://img.shields.io/badge/Node.js-%3E%3D%2020-green.svg)](https://nodejs.org/)
-[![Tests: 308](https://img.shields.io/badge/Tests-308%20passing-brightgreen.svg)](#development)
+[![CI](https://github.com/swift-innovate/engram/actions/workflows/ci.yml/badge.svg)](https://github.com/swift-innovate/engram/actions/workflows/ci.yml)
 [![SQLite](https://img.shields.io/badge/Storage-SQLite-003B57.svg)](https://sqlite.org)
 
 </div>
@@ -108,7 +108,7 @@ Engram's pipeline mirrors how biological memory actually works:
 
 That means `retain()`, `recall()`, and basic knowledge graph building work with nothing but Node.js and SQLite.
 
-**Optional: LLM for deeper extraction and reflection.** Tier 2 entity extraction (`processExtractions()`) and reflection (`reflect()`) call a generation model to find complex relationships and synthesize observations/opinions. These are purely additive — if you never run them, the core pipeline still works. Ollama is the default provider:
+**Optional: LLM for deeper extraction and reflection.** Tier 2 entity extraction (`processExtractions()`) and reflection (`reflect()`) call a generation model to find complex relationships and synthesize observations/opinions. These are purely additive — if you never run them, the core pipeline still works. Ollama is supported out of the box, but Engram intentionally has no implicit generation-model default: configure a model before running extraction or reflection.
 
 ```bash
 ollama pull llama3.1:8b
@@ -132,6 +132,7 @@ import { Engram } from 'engram';
 // Create an engram file for your agent
 const agent = await Engram.create('./myAgent.engram', {
   ollamaUrl: 'http://localhost:11434',
+  reflectModel: 'llama3.1:8b',
   reflectMission: 'Focus on architecture preferences and infrastructure decisions.',
   retainMission: 'Prioritize technical decisions and project context. Ignore greetings.',
 });
@@ -169,7 +170,7 @@ const agent = await Engram.create('./agent.engram', {
   reflectMission?: string,         // guides reflection synthesis
   retainMission?: string,          // guides retention prioritization
   embedModel?: string,             // default: 'nomic-ai/nomic-embed-text-v1.5'
-  reflectModel?: string,           // default: 'llama3.1:8b'
+  reflectModel?: string,           // no default; required for Ollama extraction/reflection
   useOllamaEmbeddings?: boolean,   // use Ollama instead of local (default: false)
   disposition?: {                  // behavioral tuning for reflection
     skepticism?: number,           // 0–1
@@ -194,6 +195,7 @@ await agent.retain('Tom prefers Terraform with the bpg provider for Proxmox IaC'
   trustScore?: number,     // 0.0–1.0 (default: 0.5)
   context?: string,        // freeform tag (e.g. 'infrastructure', 'project:valor')
   dedupMode?: string,      // 'exact' | 'normalized' | 'none' (default: 'normalized')
+  supersedes?: string,     // explicit stale chunk id to deactivate and link
 });
 ```
 
@@ -257,6 +259,11 @@ const response = await agent.recall('What IaC tools does Tom use?', {
 // response.strategiesUsed
 ```
 
+Synthesized `opinions` and `observations` are query-scoped: Engram
+case-folds and strips punctuation from the query, then includes only entries
+with a matching normalized term. If no term matches, those arrays are empty;
+there is no global fallback context.
+
 **Result ordering.** `recall` returns results in **tier-major order, not pure relevance order**: sorted by source tier first (0 `user_stated`, 1 `inferred`/`agent_generated`, 2 `tool_result`/`external_doc`), then by trust-weighted relevance within each tier. This enforces the trust-layer guarantee — external content cannot outrank user directives regardless of relevance or trust score. Memory type (`world`/`observation`/`experience`/`opinion`) is **not** part of this ordering floor — it's a soft multiplicative weight folded into the score itself (world/observation get a gentle boost, opinion a gentle penalty), so a strong match in one type can still beat a weak match in another instead of losing to it categorically; only source tier is an absolute floor. Integrators: `results[0]` is the best match in the highest-present tier, **not** necessarily the highest-relevance match overall; do not assume score-descending order across the full list (re-sort by `score` locally where you genuinely need relevance order). Tier mapping is configurable via `RecallOptions.sourceTiers`; the memory-type weight curve via `RecallOptions.memoryTypeRank` (defaults exported as `DEFAULT_SOURCE_TIERS` / `DEFAULT_MEMORY_TYPE_RANK`). `minScore` filters the fused, weighted set — anything below the threshold is dropped before results are returned. `explainScores: true` attaches a `strategyScores` breakdown (per-strategy rank/score that fed RRF) to each result, off by default to keep the payload lean.
 
 **Recency decay tradeoff.** `decayHalfLifeDays` defaults to 180 — a chunk's score is multiplied by `2^(-ageDays/180)`, so content much older than ~18 months becomes functionally unrecallable regardless of relevance, with no warning. That's a sensible default for a short-lived coding-session context, but a real trap for a personal-assistant/journal-style consumer meant to have continuity across years — pass `decayHalfLifeDays: 0` (or a much longer half-life) explicitly if that's your use case; don't rely on the default.
@@ -278,6 +285,22 @@ const result = await agent.reflect();
 // { observationsCreated, opinionsFormed, opinionsReinforced, chunksProcessed }
 ```
 
+New opinions are safe by default: they need three verified chunks spanning two
+days, and reflection retrieves and judges counter-evidence before forming them.
+That audit costs one extra batched generation call per cycle. Object settings
+merge over the defaults; `false` is the explicit opt-out. A standalone
+`reflect()` call needs an embedder while the audit is enabled.
+
+```typescript
+await agent.reflect({
+  opinionGates: { minEvidenceCount: 4 },
+  counterEvidence: { topK: 12 },
+});
+
+// Legacy/permissive behavior is an explicit choice:
+await agent.reflect({ opinionGates: false, counterEvidence: false });
+```
+
 ### `forget(chunkId)` / `supersede(oldChunkId, newText)` / `forgetBySource(pattern)`
 
 Manage memory lifecycle:
@@ -286,6 +309,14 @@ Manage memory lifecycle:
 await agent.forget('chunk-uuid');                          // soft-delete
 await agent.supersede(oldId, 'corrected fact', options);   // replace with link
 const count = await agent.forgetBySource('session-123');   // bulk soft-delete
+```
+
+Conflicting facts are intentionally retained as separate active records until
+the caller explicitly supersedes the stale chunk. Recall's human CLI output
+includes chunk IDs so a returned fact can be corrected immediately:
+
+```bash
+engram retain "Tom switched to Kubernetes" --supersedes chk-abc123
 ```
 
 ### `close()`
@@ -552,7 +583,7 @@ npx engram-mcp ./agent.engram --anthropic-api-key sk-ant-... --anthropic-model c
 | `engram_suggestions` | List procedural suggestions (recurring corrections/friction/workflows worth codifying as a skill/rule/workflow/config) |
 | `engram_resolve_suggestion` | Set a suggestion's lifecycle status (`accepted`/`dismissed`/`implemented`; `proposed` reopens) |
 
-`engram_session` omitting `action` behaves exactly as before (backward compatible); `action: 'update'`/`'snapshot'` require `sessionId` and let an MCP-only agent drive the full session lifecycle without a direct API call. `engram_reflect` takes an optional `suggest: boolean` (default `false`) to also run the procedural-suggestion pass that cycle; suggestions never appear in `engram_recall`, only via `engram_suggestions`.
+`engram_session` omitting `action` behaves exactly as before (backward compatible); `action: 'update'`/`'snapshot'` require `sessionId` and let an MCP-only agent drive the full session lifecycle without a direct API call. `engram_retain` accepts `supersedes` to atomically replace a known stale chunk. `engram_reflect` takes an optional `suggest: boolean` (default `false`) to also run the procedural-suggestion pass that cycle; suggestions never appear in `engram_recall`, only via `engram_suggestions`. Reflection is safe by default: `opinionGates` defaults to three verified chunks across two days and `counterEvidence` defaults to a fail-closed, extra batched judge call (`topK: 8`, contradiction ratio `0.5`). Pass either field as `false` only for an explicit opt-out; object values override individual safe defaults.
 
 ## CLI
 
@@ -608,6 +639,9 @@ engram forget chk-abc123 --json
 # Background maintenance (need an LLM)
 engram reflect --json
 engram reflect --suggest --json   # also propose procedural suggestions
+# Explicit safety overrides when needed
+engram reflect --opinion-min-evidence 4 --counter-evidence-top-k 12 --json
+engram reflect --unsafe-opinions --no-counter-evidence --json  # permissive opt-out
 engram process-extractions --batch-size 10 --json
 
 # Queue health (includes a failed_reasons breakdown)
@@ -730,7 +764,9 @@ Portable skill files for agents using Engram via mcporter:
 ```typescript
 import { Engram, shouldRetain, formatForPrompt } from 'engram';
 
-const memory = await Engram.open('./agent.engram');
+const memory = await Engram.open('./agent.engram', {
+  reflectModel: 'llama3.1:8b', // required for the extraction/reflect timers below
+});
 
 async function agentLoop(userInput: string) {
   const context = await memory.recall(userInput, { topK: 10 });
@@ -778,6 +814,7 @@ import { ReflectScheduler } from 'engram';
 const scheduler = new ReflectScheduler({
   dbPath: './agent.engram',
   ollamaUrl: 'http://localhost:11434',
+  reflectModel: 'llama3.1:8b',
 });
 scheduler.start(6 * 60 * 60 * 1000); // every 6 hours
 ```
@@ -785,7 +822,7 @@ scheduler.start(6 * 60 * 60 * 1000); // every 6 hours
 ### CLI Reflection
 
 ```bash
-npx tsx src/reflect.ts ./agent.engram
+REFLECT_MODEL=llama3.1:8b npx tsx src/reflect.ts ./agent.engram
 OLLAMA_URL=http://my-server:11434 REFLECT_MODEL=llama3.2:3b npx tsx src/reflect.ts ./agent.engram
 ```
 
@@ -846,7 +883,7 @@ try {
 
 ### Embedding model and cache
 
-Engram embeds in-process via `@huggingface/transformers` (v3+, the maintained successor to the deprecated `@xenova/transformers` — same library, new org). The default model is `nomic-ai/nomic-embed-text-v1.5` from the **public upstream nomic-ai repo, so no Hugging Face token is required**. It downloads once (~30MB quantized) to `node_modules/@huggingface/transformers/.cache/` on first use and loads from cache thereafter.
+Engram embeds in-process via `@huggingface/transformers` 4.2.0 (the maintained successor to the deprecated `@xenova/transformers`). The default model is `nomic-ai/nomic-embed-text-v1.5` from the **public upstream nomic-ai repo, so no Hugging Face token is required**. It downloads once (~30MB quantized) to `node_modules/@huggingface/transformers/.cache/` on first use and loads from cache thereafter.
 
 > The legacy `Xenova/nomic-embed-text-v1.5` mirror is now **gated** on the HF hub (401 without a token), which is why it's no longer the default. It ships identical 768-dim weights, so existing `.engram` files stay valid either way. Override the model via the `embedModel` option; for an unregistered model also pass an explicit `dimensions` so Engram records the correct vector size.
 
@@ -865,8 +902,9 @@ Agent memory files use the `.engram` extension. Standard SQLite databases — in
 ```bash
 npm install
 npm run build        # TypeScript → dist/
-npm test             # 308 tests across 16 suites
+npm test             # run the TypeScript test suite
 npm run typecheck    # type check without emit
+npm run audit:prod   # fail on high/critical production dependency advisories
 npm run example      # run examples/basic-usage.ts
 ```
 

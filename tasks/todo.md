@@ -87,3 +87,12 @@ before_agent_start) and any consumer-side "draft the skill file" flow.
 - Precision-first defaults (gates ≥3 evidence, distinct days/sources).
 - format:check is a separate CI gate — run it pre-push.
 - Library + MCP/CLI only; Pi addendum hint is a later adapter-layer slice.
+
+## Reliability, Safety, and Release Hardening (active)
+
+- [x] Make synthesized recall context strictly query-scoped and add coverage.
+- [x] Apply safe reflection defaults, fail-closed counter-evidence, and MCP/CLI configuration.
+- [x] Make retain duplicate resolution atomic under concurrent writers.
+- [x] Expose explicit supersession in retain transports and recall output.
+- [x] Update Rust/Node CI, dependencies, documentation, license, and evaluation fixtures.
+- [x] Run the complete release verification matrix and reviewer pass.

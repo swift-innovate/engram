@@ -71,18 +71,13 @@ pub fn handle_tools_call(exec: &Executor, params: &Value) -> Result<Value, Strin
     let vars: BTreeMap<String, Value> = arguments
         .and_then(|a| a.get("variables"))
         .and_then(|v| v.as_object())
-        .map(|obj| {
-            obj.iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect()
-        })
+        .map(|obj| obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
         .unwrap_or_default();
 
     let result = exec
         .query_with_vars(query, vars)
         .map_err(|e| e.to_string())?;
-    let result_json =
-        serde_json::to_string_pretty(&result).map_err(|e| e.to_string())?;
+    let result_json = serde_json::to_string_pretty(&result).map_err(|e| e.to_string())?;
 
     Ok(json!({
         "content": [

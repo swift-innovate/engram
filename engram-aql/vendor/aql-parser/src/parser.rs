@@ -338,9 +338,8 @@ fn parse_predicate(pair: pest::iterators::Pair<Rule>) -> ParseResult<Predicate> 
 
     match inner.as_rule() {
         Rule::where_pred => {
-            let conditions = parse_condition_list(
-                inner.into_inner().next().ok_or(ParseError::Empty)?,
-            )?;
+            let conditions =
+                parse_condition_list(inner.into_inner().next().ok_or(ParseError::Empty)?)?;
             Ok(Predicate::Where { conditions })
         }
         Rule::key_pred => {
@@ -366,7 +365,10 @@ fn parse_predicate(pair: pest::iterators::Pair<Rule>) -> ParseResult<Predicate> 
             let var = parts.next().ok_or(ParseError::Missing("variable"))?;
             let variable = parse_variable_name(var)?;
             let threshold = parts.next().map(|p| parse_float(p)).transpose()?;
-            Ok(Predicate::Pattern { variable, threshold })
+            Ok(Predicate::Pattern {
+                variable,
+                threshold,
+            })
         }
         Rule::all_pred => Ok(Predicate::All),
         _ => Err(ParseError::UnexpectedRule(format!("{:?}", inner.as_rule()))),
@@ -414,7 +416,10 @@ fn parse_condition_atom(pair: pest::iterators::Pair<Rule>) -> ParseResult<Condit
         Some(item) => match item.as_rule() {
             Rule::paren_condition => parse_paren_condition(item),
             Rule::simple_condition => parse_simple_condition(item),
-            _ => Err(ParseError::UnexpectedRule(format!("in condition_atom: {:?}", item.as_rule()))),
+            _ => Err(ParseError::UnexpectedRule(format!(
+                "in condition_atom: {:?}",
+                item.as_rule()
+            ))),
         },
         None => Err(ParseError::Empty),
     }
@@ -519,10 +524,7 @@ fn parse_field_assignment(pair: pest::iterators::Pair<Rule>) -> ParseResult<Fiel
 }
 
 /// Parse modifier into modifiers struct
-fn parse_modifier_into(
-    pair: pest::iterators::Pair<Rule>,
-    mods: &mut Modifiers,
-) -> ParseResult<()> {
+fn parse_modifier_into(pair: pest::iterators::Pair<Rule>, mods: &mut Modifiers) -> ParseResult<()> {
     let inner = pair.into_inner().next().ok_or(ParseError::Empty)?;
 
     match inner.as_rule() {
@@ -545,10 +547,7 @@ fn parse_modifier_into(
             mods.order_by = Some(OrderBy { field, ascending });
         }
         Rule::return_mod => {
-            let fields: Vec<String> = inner
-                .into_inner()
-                .map(|p| p.as_str().to_string())
-                .collect();
+            let fields: Vec<String> = inner.into_inner().map(|p| p.as_str().to_string()).collect();
             mods.return_fields = Some(fields);
         }
         Rule::timeout_mod => {
@@ -574,8 +573,7 @@ fn parse_modifier_into(
             mods.scope = Some(scope);
         }
         Rule::namespace_mod => {
-            let ns =
-                parse_string_literal(inner.into_inner().next().ok_or(ParseError::Empty)?)?;
+            let ns = parse_string_literal(inner.into_inner().next().ok_or(ParseError::Empty)?)?;
             mods.namespace = Some(ns);
         }
         Rule::ttl_mod => {
@@ -626,7 +624,8 @@ fn parse_aggregate_func(pair: pest::iterators::Pair<Rule>) -> ParseResult<Aggreg
             }
             Rule::agg_alias => {
                 // agg_alias contains the identifier after AS
-                alias = p.into_inner()
+                alias = p
+                    .into_inner()
                     .find(|inner_p| inner_p.as_rule() == Rule::identifier)
                     .map(|inner_p| inner_p.as_str().to_string());
             }
@@ -642,11 +641,9 @@ fn parse_with_links(pair: pest::iterators::Pair<Rule>) -> ParseResult<WithLinks>
     let inner = pair.into_inner().next();
 
     match inner {
-        Some(p) if p.as_rule() == Rule::string_literal => {
-            Ok(WithLinks::Type {
-                link_type: parse_string_literal(p)?,
-            })
-        }
+        Some(p) if p.as_rule() == Rule::string_literal => Ok(WithLinks::Type {
+            link_type: parse_string_literal(p)?,
+        }),
         _ => Ok(WithLinks::All),
     }
 }
@@ -656,7 +653,11 @@ fn parse_follow_links(pair: pest::iterators::Pair<Rule>) -> ParseResult<FollowLi
     let mut inner = pair.into_inner();
 
     let link_type = parse_string_literal(inner.next().ok_or(ParseError::Missing("link type"))?)?;
-    let depth = inner.next().map(|p| parse_integer(p)).transpose()?.map(|n| n as u32);
+    let depth = inner
+        .next()
+        .map(|p| parse_integer(p))
+        .transpose()?
+        .map(|n| n as u32);
 
     Ok(FollowLinks { link_type, depth })
 }
@@ -827,7 +828,11 @@ mod tests {
         let stmt = parse("LOOKUP FROM PROCEDURAL PATTERN $log_events THRESHOLD 0.7").unwrap();
         if let Statement::Lookup(l) = stmt {
             assert_eq!(l.memory_type, MemoryType::Procedural);
-            if let Predicate::Pattern { variable, threshold } = l.predicate {
+            if let Predicate::Pattern {
+                variable,
+                threshold,
+            } = l.predicate
+            {
                 assert_eq!(variable, "log_events");
                 assert_eq!(threshold, Some(0.7));
             } else {
@@ -855,10 +860,9 @@ mod tests {
 
     #[test]
     fn test_parse_store() {
-        let stmt = parse(
-            "STORE INTO EPISODIC (incident_id = \"inc-001\", pod = \"payments\") TTL 7d",
-        )
-        .unwrap();
+        let stmt =
+            parse("STORE INTO EPISODIC (incident_id = \"inc-001\", pod = \"payments\") TTL 7d")
+                .unwrap();
         if let Statement::Store(s) = stmt {
             assert_eq!(s.memory_type, MemoryType::Episodic);
             assert_eq!(s.payload.len(), 2);
@@ -907,10 +911,16 @@ mod tests {
     fn test_parse_anonymous_pipeline() {
         // Anonymous pipeline (no name) - should generate a default name
         // Grammar requires TIMEOUT so we include it
-        let stmt = parse("PIPELINE TIMEOUT 50ms SCAN FROM WORKING | RECALL FROM EPISODIC WHERE pod = \"test\"").unwrap();
+        let stmt = parse(
+            "PIPELINE TIMEOUT 50ms SCAN FROM WORKING | RECALL FROM EPISODIC WHERE pod = \"test\"",
+        )
+        .unwrap();
         if let Statement::Pipeline(p) = stmt {
             // Anonymous pipelines get "_anonymous" as the default name
-            assert_eq!(p.name, "_anonymous", "Anonymous pipeline should have '_anonymous' name");
+            assert_eq!(
+                p.name, "_anonymous",
+                "Anonymous pipeline should have '_anonymous' name"
+            );
             assert_eq!(p.stages.len(), 2);
             // Verify first stage is SCAN
             assert!(matches!(p.stages[0], Statement::Scan(_)));
@@ -993,8 +1003,16 @@ mod tests {
             let aggs = r.modifiers.aggregate.unwrap();
             assert_eq!(aggs.len(), 2);
             // Verify alias is parsed correctly
-            assert_eq!(aggs[0].alias, Some("uses".to_string()), "COUNT alias should be 'uses'");
-            assert_eq!(aggs[1].alias, Some("avg_ctr".to_string()), "AVG alias should be 'avg_ctr'");
+            assert_eq!(
+                aggs[0].alias,
+                Some("uses".to_string()),
+                "COUNT alias should be 'uses'"
+            );
+            assert_eq!(
+                aggs[1].alias,
+                Some("avg_ctr".to_string()),
+                "AVG alias should be 'avg_ctr'"
+            );
             assert!(r.modifiers.having.is_some());
         } else {
             panic!("Expected Recall statement");
@@ -1003,8 +1021,9 @@ mod tests {
 
     #[test]
     fn test_parse_with_namespace() {
-        let stmt = parse("STORE INTO WORKING (key = \"value\") NAMESPACE \"agent-k8s\" SCOPE shared")
-            .unwrap();
+        let stmt =
+            parse("STORE INTO WORKING (key = \"value\") NAMESPACE \"agent-k8s\" SCOPE shared")
+                .unwrap();
         if let Statement::Store(s) = stmt {
             assert_eq!(s.modifiers.namespace, Some("agent-k8s".to_string()));
             assert_eq!(s.modifiers.scope, Some(Scope::Shared));
@@ -1015,7 +1034,8 @@ mod tests {
 
     #[test]
     fn test_parse_min_confidence() {
-        let stmt = parse("RECALL FROM SEMANTIC LIKE $embedding MIN_CONFIDENCE 0.8 LIMIT 5").unwrap();
+        let stmt =
+            parse("RECALL FROM SEMANTIC LIKE $embedding MIN_CONFIDENCE 0.8 LIMIT 5").unwrap();
         if let Statement::Recall(r) = stmt {
             assert_eq!(r.modifiers.min_confidence, Some(0.8));
             assert_eq!(r.modifiers.limit, Some(5));
@@ -1027,12 +1047,21 @@ mod tests {
     #[test]
     fn test_parse_or_conditions() {
         // Test OR condition
-        let stmt = parse(r#"RECALL FROM WORKING WHERE status = "active" OR status = "pending""#).unwrap();
+        let stmt =
+            parse(r#"RECALL FROM WORKING WHERE status = "active" OR status = "pending""#).unwrap();
         if let Statement::Recall(r) = stmt {
             if let Predicate::Where { conditions } = r.predicate {
                 assert_eq!(conditions.len(), 2, "Should have 2 conditions");
-                assert_eq!(conditions[0].logical_op(), None, "First condition has no preceding op");
-                assert_eq!(conditions[1].logical_op(), Some(LogicalOp::Or), "Second condition should have OR");
+                assert_eq!(
+                    conditions[0].logical_op(),
+                    None,
+                    "First condition has no preceding op"
+                );
+                assert_eq!(
+                    conditions[1].logical_op(),
+                    Some(LogicalOp::Or),
+                    "Second condition should have OR"
+                );
             } else {
                 panic!("Expected Where predicate");
             }
@@ -1041,7 +1070,8 @@ mod tests {
         }
 
         // Test AND condition
-        let stmt = parse(r#"RECALL FROM WORKING WHERE status = "active" AND priority > 5"#).unwrap();
+        let stmt =
+            parse(r#"RECALL FROM WORKING WHERE status = "active" AND priority > 5"#).unwrap();
         if let Statement::Recall(r) = stmt {
             if let Predicate::Where { conditions } = r.predicate {
                 assert_eq!(conditions.len(), 2);
@@ -1074,13 +1104,16 @@ mod tests {
     fn test_parse_reflect_then_store() {
         // B8: REFLECT THEN STORE should parse
         let result = parse(
-            r#"REFLECT FROM EPISODIC WHERE campaign = "summer_2026" THEN STORE INTO SEMANTIC (concept = "insight", confidence = 0.75)"#
+            r#"REFLECT FROM EPISODIC WHERE campaign = "summer_2026" THEN STORE INTO SEMANTIC (concept = "insight", confidence = 0.75)"#,
         );
         match result {
             Ok(Statement::Reflect(r)) => {
                 assert!(r.then_clause.is_some(), "THEN clause should be present");
                 if let Some(then_stmt) = r.then_clause {
-                    assert!(matches!(*then_stmt, Statement::Store(_)), "THEN clause should be STORE");
+                    assert!(
+                        matches!(*then_stmt, Statement::Store(_)),
+                        "THEN clause should be STORE"
+                    );
                 }
             }
             Ok(_) => panic!("Expected Reflect statement"),

@@ -123,7 +123,12 @@ describe('belief journal — journaling without gates', () => {
       mockOllamaFetch(opinionUpdateResponse([newOpinion([ids[0], ids[1]])])),
     );
 
-    const result = await reflect({ dbPath, reflectModel: 'llama-test' });
+    const result = await reflect({
+      counterEvidence: false,
+      opinionGates: false,
+      dbPath,
+      reflectModel: 'llama-test',
+    });
     expect(result.opinionsFormed).toBe(1);
     expect(result.opinionsRejected).toBe(0);
 
@@ -152,7 +157,12 @@ describe('belief journal — journaling without gates', () => {
       'fetch',
       mockOllamaFetch(opinionUpdateResponse([newOpinion([ids[0]])])),
     );
-    await reflect({ dbPath, reflectModel: 'llama-test' });
+    await reflect({
+      counterEvidence: false,
+      opinionGates: false,
+      dbPath,
+      reflectModel: 'llama-test',
+    });
 
     // Cycle 2: the model re-derives the same belief as "new" — dedups into a
     // reinforcement, which must journal as 'reinforced', not 'formed'.
@@ -161,7 +171,12 @@ describe('belief journal — journaling without gates', () => {
       'fetch',
       mockOllamaFetch(opinionUpdateResponse([newOpinion([moreIds[0]])])),
     );
-    const result2 = await reflect({ dbPath, reflectModel: 'llama-test' });
+    const result2 = await reflect({
+      counterEvidence: false,
+      opinionGates: false,
+      dbPath,
+      reflectModel: 'llama-test',
+    });
     expect(result2.opinionsReinforced).toBe(1);
 
     const rows = allJournalRows(dbPath);
@@ -177,7 +192,12 @@ describe('belief journal — journaling without gates', () => {
       'fetch',
       mockOllamaFetch(opinionUpdateResponse([newOpinion([ids[0]])])),
     );
-    await reflect({ dbPath, reflectModel: 'llama-test' });
+    await reflect({
+      counterEvidence: false,
+      opinionGates: false,
+      dbPath,
+      reflectModel: 'llama-test',
+    });
 
     const moreIds = await seedMoreFacts(dbPath, 5);
     vi.stubGlobal(
@@ -192,7 +212,12 @@ describe('belief journal — journaling without gates', () => {
         ]),
       ),
     );
-    const result2 = await reflect({ dbPath, reflectModel: 'llama-test' });
+    const result2 = await reflect({
+      counterEvidence: false,
+      opinionGates: false,
+      dbPath,
+      reflectModel: 'llama-test',
+    });
     expect(result2.opinionsChallenged).toBe(1);
 
     const rows = allJournalRows(dbPath);
@@ -218,7 +243,12 @@ describe('belief journal — journaling without gates', () => {
       ),
     );
 
-    const result = await reflect({ dbPath, reflectModel: 'llama-test' });
+    const result = await reflect({
+      counterEvidence: false,
+      opinionGates: false,
+      dbPath,
+      reflectModel: 'llama-test',
+    });
     // No matching opinions exist: both verdicts drop — but now audibly.
     expect(result.opinionsReinforced).toBe(0);
     expect(result.opinionsChallenged).toBe(0);
@@ -271,9 +301,11 @@ describe('belief journal — formation gates', () => {
     );
 
     const result = await reflect({
+      counterEvidence: false,
+      opinionGates: false,
       dbPath,
       reflectModel: 'llama-test',
-      opinionGates: { minEvidenceCount: 2 },
+      opinionGates: { minEvidenceCount: 2, minDistinctDays: 0 },
     });
     expect(result.opinionsFormed).toBe(0);
     expect(result.opinionsRejected).toBe(1);
@@ -321,9 +353,11 @@ describe('belief journal — formation gates', () => {
     );
 
     const result = await reflect({
+      counterEvidence: false,
+      opinionGates: false,
       dbPath,
       reflectModel: 'llama-test',
-      opinionGates: { minEvidenceCount: 2 },
+      opinionGates: { minEvidenceCount: 2, minDistinctDays: 0 },
     });
     expect(result.opinionsRejected).toBe(1);
 
@@ -341,9 +375,11 @@ describe('belief journal — formation gates', () => {
     );
 
     const result = await reflect({
+      counterEvidence: false,
+      opinionGates: false,
       dbPath,
       reflectModel: 'llama-test',
-      opinionGates: { minEvidenceCount: 2 },
+      opinionGates: { minEvidenceCount: 2, minDistinctDays: 0 },
     });
     expect(result.opinionsFormed).toBe(1);
     expect(result.opinionsRejected).toBe(0);
@@ -366,9 +402,11 @@ describe('belief journal — formation gates', () => {
       mockOllamaFetch(opinionUpdateResponse([newOpinion([ids[0], ids[1]])])),
     );
     const rejected = await reflect({
+      counterEvidence: false,
+      opinionGates: false,
       dbPath,
       reflectModel: 'llama-test',
-      opinionGates: { minDistinctDays: 2 },
+      opinionGates: { minEvidenceCount: 0, minDistinctDays: 2 },
     });
     expect(rejected.opinionsRejected).toBe(1);
     const rejectedRow = allJournalRows(dbPath)[0];
@@ -388,9 +426,11 @@ describe('belief journal — formation gates', () => {
       mockOllamaFetch(opinionUpdateResponse([newOpinion([ids[0], ids[1]])])),
     );
     const formed = await reflect({
+      counterEvidence: false,
+      opinionGates: false,
       dbPath,
       reflectModel: 'llama-test',
-      opinionGates: { minDistinctDays: 2 },
+      opinionGates: { minEvidenceCount: 0, minDistinctDays: 2 },
     });
     expect(formed.opinionsFormed).toBe(1);
   });
@@ -404,9 +444,15 @@ describe('belief journal — formation gates', () => {
       mockOllamaFetch(opinionUpdateResponse([newOpinion([ids[0], ids[1]])])),
     );
     const rejected = await reflect({
+      counterEvidence: false,
+      opinionGates: false,
       dbPath,
       reflectModel: 'llama-test',
-      opinionGates: { minDistinctSources: 2 },
+      opinionGates: {
+        minEvidenceCount: 0,
+        minDistinctDays: 0,
+        minDistinctSources: 2,
+      },
     });
     expect(rejected.opinionsRejected).toBe(1);
     expect(
@@ -426,9 +472,15 @@ describe('belief journal — formation gates', () => {
       mockOllamaFetch(opinionUpdateResponse([newOpinion([ids[0], ids[1]])])),
     );
     const formed = await reflect({
+      counterEvidence: false,
+      opinionGates: false,
       dbPath,
       reflectModel: 'llama-test',
-      opinionGates: { minDistinctSources: 2 },
+      opinionGates: {
+        minEvidenceCount: 0,
+        minDistinctDays: 0,
+        minDistinctSources: 2,
+      },
     });
     expect(formed.opinionsFormed).toBe(1);
   });
@@ -443,9 +495,11 @@ describe('belief journal — formation gates', () => {
       mockOllamaFetch(opinionUpdateResponse([newOpinion([ids[0]])])),
     );
     const cycle1 = await reflect({
+      counterEvidence: false,
+      opinionGates: false,
       dbPath,
       reflectModel: 'llama-test',
-      opinionGates: { minEvidenceCount: 2 },
+      opinionGates: { minEvidenceCount: 2, minDistinctDays: 0 },
     });
     expect(cycle1.opinionsRejected).toBe(1);
     const rejectionId = allJournalRows(dbPath)[0].id;
@@ -458,9 +512,11 @@ describe('belief journal — formation gates', () => {
       mockOllamaFetch(opinionUpdateResponse([newOpinion([moreIds[0]])])),
     );
     const cycle2 = await reflect({
+      counterEvidence: false,
+      opinionGates: false,
       dbPath,
       reflectModel: 'llama-test',
-      opinionGates: { minEvidenceCount: 2 },
+      opinionGates: { minEvidenceCount: 2, minDistinctDays: 0 },
     });
     expect(cycle2.opinionsFormed).toBe(1);
     expect(cycle2.opinionsRejected).toBe(0);
@@ -507,9 +563,11 @@ describe('belief journal — read API', () => {
       ),
     );
     const result = await reflect({
+      counterEvidence: false,
+      opinionGates: false,
       dbPath,
       reflectModel: 'llama-test',
-      opinionGates: { minEvidenceCount: 2 },
+      opinionGates: { minEvidenceCount: 2, minDistinctDays: 0 },
     });
     expect(result.opinionsFormed).toBe(1);
     expect(result.opinionsRejected).toBe(1);
@@ -549,7 +607,12 @@ describe('belief journal — read API', () => {
       'fetch',
       mockOllamaFetch(opinionUpdateResponse([newOpinion([ids[0], ids[1]])])),
     );
-    await reflect({ dbPath, reflectModel: 'llama-test' });
+    await reflect({
+      counterEvidence: false,
+      opinionGates: false,
+      dbPath,
+      reflectModel: 'llama-test',
+    });
 
     const engram = await Engram.open(dbPath, { embedder: new MockEmbedder() });
     const rows = engram.beliefJournal({ action: 'formed' });

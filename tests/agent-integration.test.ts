@@ -311,7 +311,10 @@ describe('Agent Integration — multi-topic conversation lifecycle', () => {
       embedder,
       reflectModel: 'llama-test',
     });
-    const result = await engram.reflect();
+    const result = await engram.reflect({
+      counterEvidence: false,
+      opinionGates: false,
+    });
 
     expect(result.status).toBe('completed');
     expect(result.factsProcessed).toBeGreaterThanOrEqual(5);

@@ -34,9 +34,8 @@ pub fn execute(conn: &Connection, stmt: &ScanStmt) -> AqlResult<QueryResult> {
         limit = n.min(1000);
     }
 
-    let mut where_parts: Vec<String> = vec![
-        "(expires_at IS NULL OR expires_at > datetime('now'))".into(),
-    ];
+    let mut where_parts: Vec<String> =
+        vec!["(expires_at IS NULL OR expires_at > datetime('now'))".into()];
     if let Some(clause) = &after_datetime {
         where_parts.push(format!("updated_at > {}", clause));
     }

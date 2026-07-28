@@ -207,8 +207,7 @@ mod tests {
         let mut child = spawn_silent_child();
         let stdin = child.stdin.take().unwrap();
         let stdout = BufReader::new(child.stdout.take().unwrap());
-        let mut client =
-            JsonRpcClient::new(stdin, stdout).with_timeout(Duration::from_millis(150));
+        let mut client = JsonRpcClient::new(stdin, stdout).with_timeout(Duration::from_millis(150));
 
         let req = ClientRequest::new(client.next_id(), "initialize", serde_json::json!({}));
         let started = std::time::Instant::now();
@@ -224,7 +223,10 @@ mod tests {
             msg.contains("did not respond") || msg.contains("hung"),
             "unexpected error message: {msg}"
         );
-        assert!(client.eof, "client should mark itself unusable after a timeout");
+        assert!(
+            client.eof,
+            "client should mark itself unusable after a timeout"
+        );
         assert!(
             elapsed < Duration::from_secs(5),
             "call_raw should return promptly on timeout, took {elapsed:?}"

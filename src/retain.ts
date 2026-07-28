@@ -199,6 +199,22 @@ function sourceTier(sourceType: string): number {
   return RETAIN_SOURCE_TIERS[sourceType] ?? 2;
 }
 
+type DuplicateChunk = NonNullable<ReturnType<typeof findNormalizedDuplicate>>;
+
+function findDuplicate(
+  db: Database.Database,
+  text: string,
+  dedupMode: Exclude<RetainOptions['dedupMode'], 'none'>,
+): DuplicateChunk | undefined {
+  if (dedupMode === 'normalized') return findNormalizedDuplicate(db, text);
+  return db
+    .prepare(
+      `SELECT id, trust_score, source_type, source, source_uri, context, event_time, event_time_end, temporal_label
+       FROM chunks WHERE is_active = TRUE AND text = ? LIMIT 1`,
+    )
+    .get(text) as DuplicateChunk | undefined;
+}
+
 /**
  * Mark a chunk superseded — is_active = FALSE, superseded_by = the new
  * chunk's id. Called from INSIDE the same db.transaction() as the write
@@ -218,6 +234,65 @@ function markSuperseded(
   db.prepare(
     `UPDATE chunks SET is_active = FALSE, superseded_by = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
   ).run(newChunkId, oldChunkId);
+}
+
+/** Promote provenance on a duplicate while the caller owns the write lock. */
+function promoteDuplicate(
+  db: Database.Database,
+  existing: DuplicateChunk,
+  options: Pick<
+    RetainOptions,
+    | 'trustScore'
+    | 'source'
+    | 'sourceUri'
+    | 'context'
+    | 'sourceType'
+    | 'eventTime'
+    | 'eventTimeEnd'
+    | 'temporalLabel'
+    | 'supersedes'
+  >,
+): RetainResult {
+  const trustScore = options.trustScore ?? 0.5;
+  const sourceType = options.sourceType ?? 'inferred';
+  const newTrust = Math.max(existing.trust_score, trustScore);
+  const existingTier = sourceTier(existing.source_type);
+  const newTier = sourceTier(sourceType);
+  const promoteProvenance =
+    newTier < existingTier ||
+    (newTier === existingTier &&
+      (trustScore > existing.trust_score ||
+        (trustScore === existing.trust_score &&
+          sourceType !== existing.source_type)));
+  const updates = ['trust_score = ?'];
+  const params: unknown[] = [newTrust];
+  if (promoteProvenance) {
+    updates.push('source = COALESCE(?, source)');
+    updates.push('source_uri = COALESCE(?, source_uri)');
+    updates.push('context = COALESCE(?, context)');
+    updates.push('source_type = ?');
+    updates.push('event_time = COALESCE(?, event_time)');
+    updates.push('event_time_end = COALESCE(?, event_time_end)');
+    updates.push('temporal_label = COALESCE(?, temporal_label)');
+    params.push(
+      options.source ?? null,
+      options.sourceUri ?? null,
+      options.context ?? null,
+      sourceType,
+      options.eventTime ?? null,
+      options.eventTimeEnd ?? null,
+      options.temporalLabel ?? null,
+    );
+  }
+  updates.push('updated_at = CURRENT_TIMESTAMP');
+  params.push(existing.id);
+  db.prepare(`UPDATE chunks SET ${updates.join(', ')} WHERE id = ?`).run(
+    ...params,
+  );
+  if (options.supersedes && options.supersedes !== existing.id) {
+    markSuperseded(db, options.supersedes, existing.id);
+  }
+  return { chunkId: existing.id, queued: false, deduplicated: true };
 }
 
 // =============================================================================
@@ -253,81 +328,14 @@ export async function retain(
     supersedes = null,
   } = options;
 
-  // Dedup check — runs before embed to avoid unnecessary Ollama calls
+  // Optimistic dedup check: avoids embedding work in the common duplicate
+  // case. A second lookup under BEGIN IMMEDIATE below makes this safe when two
+  // connections both miss this check concurrently.
   if (dedupMode !== 'none') {
-    const existing = (
-      dedupMode === 'normalized'
-        ? findNormalizedDuplicate(db, text)
-        : db
-            .prepare(
-              `SELECT id, trust_score, source_type, source, source_uri, context, event_time, event_time_end, temporal_label
-               FROM chunks WHERE is_active = TRUE AND text = ? LIMIT 1`,
-            )
-            .get(text)
-    ) as
-      | {
-          id: string;
-          trust_score: number;
-          source_type: string;
-          source: string | null;
-          source_uri: string | null;
-          context: string | null;
-          event_time: string | null;
-          event_time_end: string | null;
-          temporal_label: string | null;
-        }
-      | undefined;
+    const existing = findDuplicate(db, text, dedupMode);
 
     if (existing) {
-      const newTrust = Math.max(existing.trust_score, trustScore);
-      const existingTier = sourceTier(existing.source_type);
-      const newTier = sourceTier(sourceType);
-      const promoteProvenance =
-        newTier < existingTier ||
-        (newTier === existingTier &&
-          (trustScore > existing.trust_score ||
-            (trustScore === existing.trust_score &&
-              sourceType !== existing.source_type)));
-
-      const updates = ['trust_score = ?'];
-      const params: unknown[] = [newTrust];
-      if (promoteProvenance) {
-        updates.push('source = COALESCE(?, source)');
-        updates.push('source_uri = COALESCE(?, source_uri)');
-        updates.push('context = COALESCE(?, context)');
-        updates.push('source_type = ?');
-        updates.push('event_time = COALESCE(?, event_time)');
-        updates.push('event_time_end = COALESCE(?, event_time_end)');
-        updates.push('temporal_label = COALESCE(?, temporal_label)');
-        params.push(
-          source,
-          sourceUri,
-          context,
-          sourceType,
-          eventTime,
-          eventTimeEnd,
-          temporalLabel,
-        );
-      }
-      updates.push('updated_at = CURRENT_TIMESTAMP');
-      params.push(existing.id);
-
-      // Same transaction as the dedup UPDATE, not a separate statement —
-      // the "mark old chunk superseded" write must commit-or-rollback
-      // together with the dedup write it's paired with. Self-supersede
-      // guard: if the dedup hit resolved back onto the very chunk being
-      // superseded (e.g. supersede(id, sameTextAsId)), skip the mark —
-      // deactivating the chunk retain just resolved to would be wrong.
-      const dedupTransaction = db.transaction(() => {
-        db.prepare(`UPDATE chunks SET ${updates.join(', ')} WHERE id = ?`).run(
-          ...params,
-        );
-        if (supersedes && supersedes !== existing.id) {
-          markSuperseded(db, supersedes, existing.id);
-        }
-      });
-      dedupTransaction();
-      return { chunkId: existing.id, queued: false, deduplicated: true };
+      return db.transaction(() => promoteDuplicate(db, existing, options))();
     }
   }
 
@@ -342,7 +350,7 @@ export async function retain(
   const shouldExtract =
     !skipExtraction && (memoryType === 'world' || memoryType === 'experience');
 
-  const insertTransaction = db.transaction(() => {
+  const insertChunk = (): RetainResult => {
     // Insert chunk. node_origin stamps the authoring instance (first author
     // wins — the dedup UPDATE path above deliberately never rewrites it).
     db.prepare(
@@ -393,15 +401,30 @@ export async function retain(
     if (supersedes) {
       markSuperseded(db, supersedes, chunkId);
     }
-  });
-
-  insertTransaction();
-
-  return {
-    chunkId,
-    queued: shouldExtract,
-    ...(tier1 ? { tier1 } : {}),
+    return {
+      chunkId,
+      queued: shouldExtract,
+      ...(tier1 ? { tier1 } : {}),
+    };
   };
+
+  // Re-check only after the asynchronous embedding step, while owning
+  // SQLite's write lock. This closes the normalized/exact race without a
+  // uniqueness constraint, preserving dedupMode:'none' for intentional
+  // duplicate storage.
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const existing =
+      dedupMode === 'none' ? undefined : findDuplicate(db, text, dedupMode);
+    const result = existing
+      ? promoteDuplicate(db, existing, options)
+      : insertChunk();
+    db.exec('COMMIT');
+    return result;
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
 }
 
 // =============================================================================

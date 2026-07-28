@@ -15,7 +15,8 @@ fn setup_db() -> NamedTempFile {
     let file = NamedTempFile::new().unwrap();
     let conn = rusqlite::Connection::open(file.path()).unwrap();
     conn.execute_batch(common::SCHEMA_SQL).unwrap();
-    conn.execute_batch(include_str!("fixtures/seed.sql")).unwrap();
+    conn.execute_batch(include_str!("fixtures/seed.sql"))
+        .unwrap();
     drop(conn);
     file
 }
@@ -76,7 +77,8 @@ fn mcp_initialize_and_list_tools_and_call() {
         r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}"#,
     );
     let resp = read_line(&mut stdout);
-    let v: serde_json::Value = serde_json::from_str(&resp).expect("invalid JSON in initialize response");
+    let v: serde_json::Value =
+        serde_json::from_str(&resp).expect("invalid JSON in initialize response");
     assert_eq!(v["id"], 1);
     assert!(
         v["result"]["protocolVersion"].is_string(),
@@ -95,7 +97,8 @@ fn mcp_initialize_and_list_tools_and_call() {
         r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#,
     );
     let resp = read_line(&mut stdout);
-    let v: serde_json::Value = serde_json::from_str(&resp).expect("invalid JSON in tools/list response");
+    let v: serde_json::Value =
+        serde_json::from_str(&resp).expect("invalid JSON in tools/list response");
     assert_eq!(v["id"], 2);
     let tools = v["result"]["tools"].as_array().unwrap();
     assert_eq!(tools.len(), 1);
@@ -107,7 +110,8 @@ fn mcp_initialize_and_list_tools_and_call() {
         r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"engram_aql","arguments":{"query":"RECALL FROM EPISODIC ALL LIMIT 2"}}}"#,
     );
     let resp = read_line(&mut stdout);
-    let v: serde_json::Value = serde_json::from_str(&resp).expect("invalid JSON in tools/call response");
+    let v: serde_json::Value =
+        serde_json::from_str(&resp).expect("invalid JSON in tools/call response");
     assert_eq!(v["id"], 3);
     let content = &v["result"]["content"];
     assert!(content.is_array(), "result.content should be an array");

@@ -88,8 +88,9 @@ export interface ReflectConfig {
    * Evidence thresholds a NEW opinion must clear before it is formed
    * (issue #38). Applies to `direction: 'new'` candidates only —
    * reinforcement/challenge of an existing opinion is evidence accumulation
-   * on an already-formed belief and stays ungated. Omit (the default) to
-   * gate nothing — byte-identical to pre-existing behaviour.
+   * on an already-formed belief and stays ungated. Omit to use the safe
+   * default gates (three verified chunks across two distinct days); pass
+   * `false` only to opt out explicitly.
    *
    * A candidate below threshold is NOT formed; it is journaled in
    * `belief_journal` as `rejected` (reason `insufficient_evidence`) with
@@ -99,12 +100,13 @@ export interface ReflectConfig {
    * evidence accumulates one chunk per batch is not permanently starved by
    * per-batch evaluation.
    */
-  opinionGates?: OpinionGates;
+  opinionGates?: false | OpinionGates;
   /**
    * Embedding provider for the counter-evidence pass's retrieval (issue #38
    * item 2). Threaded automatically by `Engram.reflect()`; standalone
-   * `reflect()` callers must supply one for `counterEvidence` to run —
-   * without it the pass is skipped with a loud warning.
+   * `reflect()` callers must supply one while counter-evidence is enabled
+   * (the default); without it reflection throws clearly rather than silently
+   * skipping the safety check.
    */
   embedder?: EmbeddingProvider;
   /**
@@ -114,14 +116,16 @@ export interface ReflectConfig {
    * and one extra LLM call per cycle judges which retrieved chunks
    * contradict each candidate. Contradictions populate the opinion's
    * `contradicting_chunks` / `last_challenged` at birth, are journaled, and
-   * (optionally) block formation when they outweigh support. Omit (the
-   * default) to run no pass — byte-identical to pre-existing behaviour.
+   * (optionally) block formation when they outweigh support. Omit to use the
+   * safe default pass; pass `false` only to opt out explicitly. By default,
+   * an unavailable or invalid judgment fails closed: the facts remain
+   * unreflected and the candidate is journaled for retry.
    *
    * This is the ACTIVE counterpart to the pre-existing passive challenge
    * path, which only fires when contradicting evidence happens to land in
    * the same reflect batch as the belief it contradicts.
    */
-  counterEvidence?: CounterEvidenceConfig;
+  counterEvidence?: false | CounterEvidenceConfig;
   /**
    * Procedural suggestion pass (issue #39). Scans correction/friction/
    * workflow signals (chunk supersessions and forgets, tool-result friction,
@@ -156,6 +160,13 @@ export interface OpinionGates {
   minDistinctSources?: number;
 }
 
+/** Safe default evidence gates for new beliefs. */
+export const DEFAULT_OPINION_GATES: Readonly<Required<OpinionGates>> = {
+  minEvidenceCount: 3,
+  minDistinctDays: 2,
+  minDistinctSources: 0,
+};
+
 /**
  * Configuration for the active counter-evidence pass (issue #38 item 2).
  * Cost model: one `recall()` per eligible candidate plus ONE extra LLM call
@@ -182,7 +193,23 @@ export interface CounterEvidenceConfig {
    * but never block formation.
    */
   maxContradictionRatio?: number;
+  /**
+   * Keep availability-first behavior if counter-evidence retrieval or judging
+   * fails. The default is fail-closed: affected facts remain unreflected for a
+   * later retry and the unavailable candidate is journaled.
+   */
+  failOpen?: boolean;
 }
+
+/** Safe default active audit for new-opinion candidates. */
+export const DEFAULT_COUNTER_EVIDENCE: Readonly<
+  Required<CounterEvidenceConfig>
+> = {
+  onReinforce: false,
+  topK: 8,
+  maxContradictionRatio: 0.5,
+  failOpen: false,
+};
 
 interface Chunk {
   id: string;
@@ -1048,22 +1075,30 @@ export async function reflect(config: ReflectConfig): Promise<ReflectResult> {
     minFactsThreshold = 5,
     existingContextCharBudget = DEFAULT_EXISTING_CONTEXT_CHAR_BUDGET,
     sourceTypes,
-    opinionGates,
-    counterEvidence,
+    opinionGates: opinionGatesConfig,
+    counterEvidence: counterEvidenceConfig,
     embedder,
   } = config;
 
-  // The counter-evidence pass retrieves via recall(), whose semantic strategy
-  // needs an embedder. Without one (standalone reflect() callers), skip the
-  // pass loudly rather than run a silently-degraded audit.
-  const counterEvidenceActive = Boolean(counterEvidence && embedder);
+  const opinionGates: OpinionGates | undefined =
+    opinionGatesConfig === false
+      ? undefined
+      : { ...DEFAULT_OPINION_GATES, ...opinionGatesConfig };
+  const counterEvidence: CounterEvidenceConfig | undefined =
+    counterEvidenceConfig === false
+      ? undefined
+      : { ...DEFAULT_COUNTER_EVIDENCE, ...counterEvidenceConfig };
+
+  // Safe defaults make the audit active unless a caller explicitly opts out.
+  // Standalone reflect() has no instance embedder to thread through, so fail
+  // loudly instead of silently forming unaudited beliefs.
   if (counterEvidence && !embedder) {
-    console.warn(
-      '[Reflect] counterEvidence is configured but no embedder was provided — ' +
-        'skipping the counter-evidence pass. Use Engram.reflect() (which threads ' +
-        'its embedder automatically) or pass ReflectConfig.embedder.',
+    throw new Error(
+      'reflect() enables counter-evidence by default and requires an embedder. ' +
+        'Supply ReflectConfig.embedder or set counterEvidence: false explicitly.',
     );
   }
+  const counterEvidenceActive = counterEvidence !== undefined;
 
   // No default model. Use an injected generator, or build an Ollama generator
   // only when a model is explicitly configured; otherwise fail loud rather than
@@ -1443,6 +1478,55 @@ export async function reflect(config: ReflectConfig): Promise<ReflectResult> {
       result.counterEvidenceChecked = ceVerdicts.size;
     }
     const ceMaxRatio = counterEvidence?.maxContradictionRatio ?? 0.5;
+
+    // A missing verdict is not evidence that no contradiction exists. Default
+    // to retrying the cycle with its facts intact; operators that value
+    // availability over this safety guarantee can opt into failOpen.
+    const unavailableCandidates = [...ceEligible].filter(
+      (index) => !ceVerdicts.has(index),
+    );
+    if (unavailableCandidates.length > 0 && !counterEvidence?.failOpen) {
+      const unavailableReason =
+        counterEvidenceError ??
+        'Counter-evidence judge returned no valid verdict for the candidate.';
+      const now = new Date().toISOString();
+      const journalUnavailable = db.prepare(`
+        INSERT INTO belief_journal (id, reflect_run_id, opinion_id, action, candidate_belief, domain,
+                                    supporting_chunks, contradicting_chunks, gate_results, rationale, created_at)
+        VALUES (?, ?, NULL, 'rejected', ?, ?, ?, '[]', ?, ?, ?)
+      `);
+      const journalTransaction = db.transaction(() => {
+        for (const index of unavailableCandidates) {
+          const candidate = output.opinion_updates[index];
+          journalUnavailable.run(
+            `bj-${randomUUID().substring(0, 8)}`,
+            logId,
+            candidate.belief,
+            candidate.domain ?? null,
+            JSON.stringify(candidate.evidence_chunk_ids.filter(Boolean)),
+            JSON.stringify({
+              reason: 'counter_evidence_unavailable',
+              counter_evidence: { checked: false, error: unavailableReason },
+            }),
+            clampRationale(candidate.rationale),
+            now,
+          );
+        }
+        db.prepare(
+          `UPDATE reflect_log
+           SET completed_at = CURRENT_TIMESTAMP, status = 'partial', error = ?
+           WHERE id = ?`,
+        ).run(unavailableReason, logId);
+      });
+      journalTransaction();
+      result.opinionsRejected = unavailableCandidates.length;
+      result.status = 'partial';
+      result.error = unavailableReason;
+      result.durationMs = Date.now() - startTime;
+      db.close();
+      return result;
+    }
+
     // Journal annotation for the pass's outcome on a candidate: a verdict
     // when one exists, an unchecked marker when the candidate was ELIGIBLE
     // but got no verdict (judge failure/omission), nothing when the pass is

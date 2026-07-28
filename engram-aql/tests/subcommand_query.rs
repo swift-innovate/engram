@@ -14,7 +14,8 @@ fn build_test_db() -> NamedTempFile {
     let path = file.path();
     let conn = rusqlite::Connection::open(path).unwrap();
     conn.execute_batch(common::SCHEMA_SQL).unwrap();
-    conn.execute_batch(include_str!("fixtures/seed.sql")).unwrap();
+    conn.execute_batch(include_str!("fixtures/seed.sql"))
+        .unwrap();
     drop(conn);
     file
 }

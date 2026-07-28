@@ -1216,21 +1216,28 @@ export async function recall(
     return result;
   });
 
+  // Synthesized context is query-scoped: unlike raw chunks, opinions and
+  // observations are generated material and must never enter a prompt merely
+  // because no lexical match was found. Normalize before matching so ordinary
+  // punctuation ("Terraform?", "Rust's") cannot suppress a valid hit.
+  const synthesizedQueryTerms = [
+    ...new Set(
+      query
+        .toLocaleLowerCase()
+        .replace(/[^\p{L}\p{N}]+/gu, ' ')
+        .split(/\s+/)
+        .filter((term) => term.length > 3),
+    ),
+  ];
+
   // Gather relevant opinions
   const opinions = includeOpinions
     ? (() => {
-        // Extract query tokens for keyword matching against belief text
-        const tokens = query
-          .toLowerCase()
-          .split(/\s+/)
-          .filter((t) => t.length > 3);
-
-        if (tokens.length > 0) {
-          const conditions = tokens
+        if (synthesizedQueryTerms.length > 0) {
+          const conditions = synthesizedQueryTerms
             .map(() => `LOWER(belief) LIKE ?`)
             .join(' OR ');
-          const params = tokens.map((t) => `%${t}%`);
-          const scoped = db
+          return db
             .prepare(
               `
             SELECT belief, confidence, domain
@@ -1240,47 +1247,24 @@ export async function recall(
             LIMIT 5
           `,
             )
-            .all(...params) as Array<{
+            .all(...synthesizedQueryTerms.map((term) => `%${term}%`)) as Array<{
             belief: string;
             confidence: number;
             domain: string | null;
           }>;
-          if (scoped.length > 0) return scoped;
         }
-
-        // Fall back to global top opinions
-        return db
-          .prepare(
-            `
-          SELECT belief, confidence, domain
-          FROM opinions
-          WHERE is_active = TRUE AND confidence >= 0.5
-          ORDER BY confidence DESC
-          LIMIT 5
-        `,
-          )
-          .all() as Array<{
-          belief: string;
-          confidence: number;
-          domain: string | null;
-        }>;
+        return [];
       })()
     : [];
 
   // Gather relevant observations
   const observations = includeObservations
     ? (() => {
-        const tokens = query
-          .toLowerCase()
-          .split(/\s+/)
-          .filter((t) => t.length > 3);
-
-        if (tokens.length > 0) {
-          const conditions = tokens
+        if (synthesizedQueryTerms.length > 0) {
+          const conditions = synthesizedQueryTerms
             .map(() => `LOWER(summary) LIKE ?`)
             .join(' OR ');
-          const params = tokens.map((t) => `%${t}%`);
-          const scoped = db
+          return db
             .prepare(
               `
             SELECT summary, domain, topic
@@ -1290,29 +1274,13 @@ export async function recall(
             LIMIT 5
           `,
             )
-            .all(...params) as Array<{
+            .all(...synthesizedQueryTerms.map((term) => `%${term}%`)) as Array<{
             summary: string;
             domain: string | null;
             topic: string | null;
           }>;
-          if (scoped.length > 0) return scoped;
         }
-
-        return db
-          .prepare(
-            `
-          SELECT summary, domain, topic
-          FROM observations
-          WHERE is_active = TRUE
-          ORDER BY last_refreshed DESC, synthesized_at DESC
-          LIMIT 5
-        `,
-          )
-          .all() as Array<{
-          summary: string;
-          domain: string | null;
-          topic: string | null;
-        }>;
+        return [];
       })()
     : [];
 

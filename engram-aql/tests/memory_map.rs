@@ -6,7 +6,10 @@ use engram_aql::memory_map::{aql_to_chunk_memory_type, aql_to_table, EngramTable
 #[test]
 fn semantic_maps_to_chunks_world() {
     assert_eq!(aql_to_table(MemoryType::Semantic), EngramTable::Chunks);
-    assert_eq!(aql_to_chunk_memory_type(MemoryType::Semantic), Some("world"));
+    assert_eq!(
+        aql_to_chunk_memory_type(MemoryType::Semantic),
+        Some("world")
+    );
 }
 
 #[test]

@@ -50,9 +50,7 @@ pub async fn run(db_path: &Path) -> Result<()> {
         let id = req.id.clone().unwrap();
 
         let resp = match req.method.as_str() {
-            "initialize" => {
-                JsonRpcResponse::success(id, handlers::handle_initialize(&req.params))
-            }
+            "initialize" => JsonRpcResponse::success(id, handlers::handle_initialize(&req.params)),
             "tools/list" => JsonRpcResponse::success(id, handlers::handle_tools_list()),
             "tools/call" => match handlers::handle_tools_call(&exec, &req.params) {
                 Ok(result) => JsonRpcResponse::success(id, result),

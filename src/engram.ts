@@ -95,6 +95,8 @@ import {
   reflectCatchUp,
   ReflectScheduler,
   getBeliefJournal,
+  DEFAULT_OPINION_GATES,
+  DEFAULT_COUNTER_EVIDENCE,
   type ReflectConfig,
   type ReflectResult,
   type CatchUpConfig,
@@ -202,6 +204,8 @@ export type {
   OpinionView,
   ObservationView,
 };
+
+export { DEFAULT_OPINION_GATES, DEFAULT_COUNTER_EVIDENCE };
 export {
   OllamaEmbeddings,
   LocalEmbedder,

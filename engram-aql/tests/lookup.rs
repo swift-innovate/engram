@@ -38,5 +38,8 @@ fn lookup_with_return_fields() {
     let row = &result.data[0];
     assert!(row.get("id").is_some());
     assert!(row.get("trust_score").is_some());
-    assert!(row.get("text").is_none(), "text should be filtered out by RETURN");
+    assert!(
+        row.get("text").is_none(),
+        "text should be filtered out by RETURN"
+    );
 }

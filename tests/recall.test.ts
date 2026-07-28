@@ -673,8 +673,8 @@ describe('recall() — opinions and observations', () => {
       VALUES ('op-2', 'Tom might like MongoDB', 0.3, 'architecture')`,
     ).run();
 
-    await retain(db, 'something about databases', embedder);
-    const result = await recall(db, 'databases', embedder, {
+    await retain(db, 'something about SQLite', embedder);
+    const result = await recall(db, 'SQLite!', embedder, {
       strategies: ['keyword'],
     });
 
@@ -702,8 +702,8 @@ describe('recall() — opinions and observations', () => {
       VALUES ('obs-1', 'Tom consistently chooses minimal tooling', 'architecture', 'tooling')`,
     ).run();
 
-    await retain(db, 'something about Tom', embedder);
-    const result = await recall(db, 'Tom', embedder, {
+    await retain(db, 'something about tooling', embedder);
+    const result = await recall(db, 'tooling!', embedder, {
       strategies: ['keyword'],
     });
 
@@ -1281,14 +1281,13 @@ describe('recall() — query-scoped opinions', () => {
     expect(beliefs.some((b) => b.includes('sous vide'))).toBe(false);
   });
 
-  it('falls back to global opinions when no query tokens match', async () => {
-    // Query with no token > 3 chars won't match any belief text
+  it('returns no synthesized context when no normalized query term matches', async () => {
     const result = await recall(db, 'xy', embedder, {
       strategies: ['keyword'],
     });
 
-    // Falls back to global top opinions
-    expect(result.opinions.length).toBeGreaterThan(0);
+    expect(result.opinions).toEqual([]);
+    expect(result.observations).toEqual([]);
   });
 });
 

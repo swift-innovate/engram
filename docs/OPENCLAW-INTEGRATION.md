@@ -313,10 +313,10 @@ After import, run extraction and reflection to build the knowledge graph:
 
 ```bash
 # From engram root — process entity extraction queue
-npx tsx -e "const {Engram}=await import('./dist/engram.js'); const e=await Engram.open('./agent.engram'); await e.processExtractions(100); e.close()"
+npx tsx -e "const {Engram}=await import('./dist/engram.js'); const e=await Engram.open('./agent.engram', {reflectModel:'llama3.1:8b'}); await e.processExtractions(100); e.close()"
 
 # Run reflection to synthesize observations
-npx tsx src/reflect.ts ./agent.engram
+REFLECT_MODEL=llama3.1:8b npx tsx src/reflect.ts ./agent.engram
 ```
 
 See [`tools/openclaw-import/README.md`](../tools/openclaw-import/README.md) for full CLI options and architecture details.

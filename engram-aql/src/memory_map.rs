@@ -60,9 +60,6 @@ pub fn aql_to_chunk_memory_type(aql: MemoryType) -> Option<&'static str> {
     match aql {
         MemoryType::Episodic => Some("experience"),
         MemoryType::Semantic => Some("world"),
-        MemoryType::Procedural
-        | MemoryType::Working
-        | MemoryType::Tools
-        | MemoryType::All => None,
+        MemoryType::Procedural | MemoryType::Working | MemoryType::Tools | MemoryType::All => None,
     }
 }

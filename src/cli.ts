@@ -120,6 +120,61 @@ function buildRetainOptions(args: ParsedArgs): RetainOptions {
     context: args.values.get('--context'),
     eventTime: args.values.get('--event-time'),
     temporalLabel: args.values.get('--temporal-label'),
+    supersedes: args.values.get('--supersedes'),
+  };
+}
+
+function buildReflectOptions(
+  args: ParsedArgs,
+): Parameters<Engram['reflect']>[0] {
+  const minEvidenceCount = asNumber(args.values.get('--opinion-min-evidence'));
+  const minDistinctDays = asNumber(
+    args.values.get('--opinion-min-distinct-days'),
+  );
+  const minDistinctSources = asNumber(
+    args.values.get('--opinion-min-distinct-sources'),
+  );
+  const counterTopK = asNumber(args.values.get('--counter-evidence-top-k'));
+  const ratio = clampTrust(
+    asNumber(args.values.get('--counter-evidence-max-contradiction-ratio')),
+  );
+  return {
+    ...(args.bools.has('--suggest') ? { suggestions: {} } : {}),
+    ...(args.bools.has('--unsafe-opinions')
+      ? { opinionGates: false }
+      : minEvidenceCount !== undefined ||
+          minDistinctDays !== undefined ||
+          minDistinctSources !== undefined
+        ? {
+            opinionGates: {
+              minEvidenceCount: clampNonNegative(minEvidenceCount),
+              minDistinctDays: clampNonNegative(minDistinctDays),
+              minDistinctSources: clampNonNegative(minDistinctSources),
+            },
+          }
+        : {}),
+    ...(args.bools.has('--no-counter-evidence')
+      ? { counterEvidence: false }
+      : counterTopK !== undefined ||
+          ratio !== undefined ||
+          args.bools.has('--counter-evidence-on-reinforce') ||
+          args.bools.has('--counter-evidence-fail-open')
+        ? {
+            counterEvidence: {
+              topK:
+                counterTopK !== undefined
+                  ? Math.max(1, Math.floor(counterTopK))
+                  : undefined,
+              maxContradictionRatio: ratio,
+              onReinforce: args.bools.has('--counter-evidence-on-reinforce')
+                ? true
+                : undefined,
+              failOpen: args.bools.has('--counter-evidence-fail-open')
+                ? true
+                : undefined,
+            },
+          }
+        : {}),
   };
 }
 
@@ -202,7 +257,7 @@ function formatRecall(r: RecallResponse): string {
   );
   r.results.forEach((res, i) => {
     lines.push(
-      `\n[${i + 1}] score=${res.score.toFixed(3)} ${res.memoryType}/${res.sourceType} trust=${res.trustScore.toFixed(2)} created=${res.createdAt.slice(0, 10)} via=${res.strategies.join('+')}`,
+      `\n[${i + 1}] id=${res.id} score=${res.score.toFixed(3)} ${res.memoryType}/${res.sourceType} trust=${res.trustScore.toFixed(2)} created=${res.createdAt.slice(0, 10)} via=${res.strategies.join('+')}`,
     );
     lines.push(`    ${res.text}`);
     // Only present when the recall ran with --explain-scores; the shared
@@ -374,6 +429,7 @@ retain / supersede write options:
   --source <id>  --context <tag>
   --source-type <user_stated|inferred|external_doc|tool_result|agent_generated>
   --trust-score <0..1>  --event-time <iso8601>  --temporal-label <text>
+  --supersedes <chunkId>             Explicitly replace an outdated fact
 
 recall options:
   --top-k <n>  --strategies <semantic,keyword,graph,temporal>
@@ -416,8 +472,12 @@ context-query options:
 
 reflect options:
   --suggest                        Also run the procedural-suggestion pass
-                                   this cycle (gates default 3+ evidence
-                                   items across 2+ distinct days)
+  --unsafe-opinions                 Disable safe default belief evidence gates
+  --opinion-min-evidence <n>  --opinion-min-distinct-days <n>
+  --opinion-min-distinct-sources <n>
+  --no-counter-evidence             Disable the default active audit
+  --counter-evidence-top-k <n>  --counter-evidence-max-contradiction-ratio <0..1>
+  --counter-evidence-on-reinforce  --counter-evidence-fail-open
 
 suggestions options:
   --status <proposed|accepted|dismissed|implemented>
@@ -558,9 +618,7 @@ async function dispatch(
     case 'reflect': {
       const pf = await preflightGenerationModel(args, engramOptions, io);
       if (pf !== EXIT_OK) return pf;
-      const result = await engram.reflect(
-        args.bools.has('--suggest') ? { suggestions: {} } : undefined,
-      );
+      const result = await engram.reflect(buildReflectOptions(args));
       if (json) emitJson(io, result);
       else io.stdout(formatReflect(result));
       return EXIT_OK;

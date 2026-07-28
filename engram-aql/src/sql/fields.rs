@@ -10,18 +10,12 @@ pub enum FieldRef {
     /// Direct column reference
     Column(&'static str),
     /// json_extract(<column>, '$.<path>')
-    JsonPath {
-        column: &'static str,
-        path: String,
-    },
+    JsonPath { column: &'static str, path: String },
     /// Field cannot be resolved against this table's columns AND there is
     /// no JSON bag column to fall back to. Produces a SQL expression that
     /// always evaluates to NULL so queries fail cleanly (no rows matched)
     /// instead of silently returning wrong data.
-    Unresolvable {
-        table: EngramTable,
-        field: String,
-    },
+    Unresolvable { table: EngramTable, field: String },
 }
 
 impl FieldRef {

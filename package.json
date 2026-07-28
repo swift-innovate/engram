@@ -29,6 +29,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "coverage": "vitest run --coverage",
+    "audit:prod": "npm audit --omit=dev --audit-level=high",
     "lint": "eslint src/ tests/",
     "lint:fix": "eslint src/ tests/ --fix",
     "format": "prettier --write \"src/**/*.ts\" \"tests/**/*.ts\"",
@@ -39,10 +40,15 @@
     "eval": "tsx evals/run.ts"
   },
   "dependencies": {
-    "@huggingface/transformers": "^3.0.0",
-    "@modelcontextprotocol/sdk": "^1.27.1",
+    "@huggingface/transformers": "4.2.0",
+    "@modelcontextprotocol/sdk": "1.30.0",
     "better-sqlite3": "^12.11.1",
     "sqlite-vec": "^0.1.6"
+  },
+  "overrides": {
+    "adm-zip": "0.6.0",
+    "sharp": "0.35.3",
+    "tar": "7.5.22"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

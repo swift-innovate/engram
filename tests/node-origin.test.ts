@@ -98,7 +98,10 @@ describe('node-origin provenance', () => {
       });
     }
 
-    const result = await engram.reflect();
+    const result = await engram.reflect({
+      counterEvidence: false,
+      opinionGates: false,
+    });
     expect(result.opinionsFormed).toBe(1);
     expect(result.observationsCreated).toBe(1);
 

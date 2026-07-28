@@ -156,7 +156,12 @@ function seedOpinion(
 async function decayOnlyCycle(dbPath: string) {
   const { fetchFn } = mockFetchSequence([reflectResponse([])]);
   vi.stubGlobal('fetch', fetchFn);
-  return reflect({ dbPath, reflectModel: 'llama-test' });
+  return reflect({
+    counterEvidence: false,
+    opinionGates: false,
+    dbPath,
+    reflectModel: 'llama-test',
+  });
 }
 
 describe('falsifier field (would_change_this)', () => {
@@ -175,7 +180,12 @@ describe('falsifier field (would_change_this)', () => {
     ]);
     vi.stubGlobal('fetch', fetchFn);
 
-    const result = await reflect({ dbPath, reflectModel: 'llama-test' });
+    const result = await reflect({
+      counterEvidence: false,
+      opinionGates: false,
+      dbPath,
+      reflectModel: 'llama-test',
+    });
     expect(result.opinionsFormed).toBe(1);
 
     const [opinion] = getOpinions(dbPath);
@@ -195,7 +205,12 @@ describe('falsifier field (would_change_this)', () => {
     ]);
     vi.stubGlobal('fetch', fetchFn);
 
-    await reflect({ dbPath, reflectModel: 'llama-test' });
+    await reflect({
+      counterEvidence: false,
+      opinionGates: false,
+      dbPath,
+      reflectModel: 'llama-test',
+    });
     const [opinion] = getOpinions(dbPath);
     expect(opinion.would_change_this).toBeNull();
   });
@@ -205,7 +220,12 @@ describe('falsifier field (would_change_this)', () => {
     const ids = await seedFacts(dbPath, FACTS);
     const first = mockFetchSequence([reflectResponse([newOpinion([ids[0]])])]);
     vi.stubGlobal('fetch', first.fetchFn);
-    await reflect({ dbPath, reflectModel: 'llama-test' });
+    await reflect({
+      counterEvidence: false,
+      opinionGates: false,
+      dbPath,
+      reflectModel: 'llama-test',
+    });
 
     await seedFacts(
       dbPath,
@@ -220,7 +240,12 @@ describe('falsifier field (would_change_this)', () => {
     );
     const second = mockFetchSequence([reflectResponse([])]);
     vi.stubGlobal('fetch', second.fetchFn);
-    await reflect({ dbPath, reflectModel: 'llama-test' });
+    await reflect({
+      counterEvidence: false,
+      opinionGates: false,
+      dbPath,
+      reflectModel: 'llama-test',
+    });
 
     expect(second.prompts[0]).toContain(`(would change if: ${FALSIFIER})`);
   });
@@ -233,7 +258,12 @@ describe('falsifier field (would_change_this)', () => {
       reflectResponse([newOpinion([ids[0]], { would_change_this: undefined })]),
     ]);
     vi.stubGlobal('fetch', first.fetchFn);
-    await reflect({ dbPath, reflectModel: 'llama-test' });
+    await reflect({
+      counterEvidence: false,
+      opinionGates: false,
+      dbPath,
+      reflectModel: 'llama-test',
+    });
     expect(getOpinions(dbPath)[0].would_change_this).toBeNull();
 
     // Cycle 2: reinforcement states one → backfilled.
@@ -257,7 +287,12 @@ describe('falsifier field (would_change_this)', () => {
       ]),
     ]);
     vi.stubGlobal('fetch', second.fetchFn);
-    const r2 = await reflect({ dbPath, reflectModel: 'llama-test' });
+    const r2 = await reflect({
+      counterEvidence: false,
+      opinionGates: false,
+      dbPath,
+      reflectModel: 'llama-test',
+    });
     expect(r2.opinionsReinforced).toBe(1);
     expect(getOpinions(dbPath)[0].would_change_this).toBe(FALSIFIER);
 
@@ -282,7 +317,12 @@ describe('falsifier field (would_change_this)', () => {
       ]),
     ]);
     vi.stubGlobal('fetch', third.fetchFn);
-    await reflect({ dbPath, reflectModel: 'llama-test' });
+    await reflect({
+      counterEvidence: false,
+      opinionGates: false,
+      dbPath,
+      reflectModel: 'llama-test',
+    });
     expect(getOpinions(dbPath)[0].would_change_this).toBe(FALSIFIER);
   });
 
@@ -291,7 +331,12 @@ describe('falsifier field (would_change_this)', () => {
     const ids = await seedFacts(dbPath, FACTS);
     const first = mockFetchSequence([reflectResponse([newOpinion([ids[0]])])]);
     vi.stubGlobal('fetch', first.fetchFn);
-    await reflect({ dbPath, reflectModel: 'llama-test' });
+    await reflect({
+      counterEvidence: false,
+      opinionGates: false,
+      dbPath,
+      reflectModel: 'llama-test',
+    });
 
     const more = await seedFacts(
       dbPath,
@@ -310,6 +355,8 @@ describe('falsifier field (would_change_this)', () => {
     ]);
     vi.stubGlobal('fetch', second.fetchFn);
     await reflect({
+      counterEvidence: false,
+      opinionGates: false,
       dbPath,
       reflectModel: 'llama-test',
       embedder,

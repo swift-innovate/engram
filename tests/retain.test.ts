@@ -14,6 +14,9 @@ import {
   MockEmbedder,
   MockGenerator,
   EXTRACTION_RESPONSE,
+  loadSchema,
+  tmpDbPath,
+  cleanupDb,
 } from './helpers.js';
 
 // ---------------------------------------------------------------------------
@@ -154,6 +157,68 @@ describe('retain()', () => {
     const r1 = await retain(db, 'first', embedder);
     const r2 = await retain(db, 'second', embedder);
     expect(r1.chunkId).not.toBe(r2.chunkId);
+  });
+});
+
+describe('retain() — concurrent deduplication', () => {
+  async function retainConcurrently(
+    firstText: string,
+    secondText: string,
+    dedupMode: 'normalized' | 'exact' | 'none',
+  ) {
+    const path = tmpDbPath();
+    const bootstrap = new Database(path);
+    loadSchema(bootstrap);
+    bootstrap.close();
+    const first = new Database(path);
+    const second = new Database(path);
+    let started = 0;
+    let release!: () => void;
+    const bothEmbeddingsStarted = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const racingEmbedder = {
+      dimensions: 8,
+      async embed(): Promise<Float32Array> {
+        started++;
+        if (started === 2) release();
+        await bothEmbeddingsStarted;
+        return new Float32Array(8);
+      },
+    };
+    try {
+      return await Promise.all([
+        retain(first, firstText, racingEmbedder, { dedupMode }),
+        retain(second, secondText, racingEmbedder, { dedupMode }),
+      ]);
+    } finally {
+      first.close();
+      second.close();
+      cleanupDb(path);
+    }
+  }
+
+  it.each([
+    ['normalized', 'Tom prefers Terraform', ' tom  prefers terraform '],
+    ['exact', 'Tom prefers Terraform', 'Tom prefers Terraform'],
+  ] as const)(
+    'serializes concurrent %s duplicate writes',
+    async (mode, a, b) => {
+      const [first, second] = await retainConcurrently(a, b, mode);
+      expect(first.chunkId).toBe(second.chunkId);
+      expect([first.deduplicated, second.deduplicated]).toContain(true);
+    },
+  );
+
+  it('keeps concurrent duplicates when dedupMode is none', async () => {
+    const [first, second] = await retainConcurrently(
+      'Tom prefers Terraform',
+      'Tom prefers Terraform',
+      'none',
+    );
+    expect(first.chunkId).not.toBe(second.chunkId);
+    expect(first.deduplicated).toBeUndefined();
+    expect(second.deduplicated).toBeUndefined();
   });
 });
 

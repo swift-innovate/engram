@@ -93,7 +93,10 @@ fn print_result(result: &QueryResult) {
     // Collect column names from the first row (preserving insertion order)
     let JsonValue::Object(first) = &result.data[0] else {
         // Non-object data — fall back to raw JSON pretty-print
-        println!("{}", serde_json::to_string_pretty(&result.data).unwrap_or_default());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&result.data).unwrap_or_default()
+        );
         println!("{} rows · {} ms", result.count, result.timing_ms);
         return;
     };

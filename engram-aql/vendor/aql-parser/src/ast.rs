@@ -374,9 +374,7 @@ impl Value {
                 .unwrap_or(serde_json::Value::Null),
             Self::String(s) => serde_json::Value::String(s.clone()),
             Self::Variable(v) => serde_json::Value::String(format!("${}", v)),
-            Self::Array(arr) => {
-                serde_json::Value::Array(arr.iter().map(|v| v.to_json()).collect())
-            }
+            Self::Array(arr) => serde_json::Value::Array(arr.iter().map(|v| v.to_json()).collect()),
         }
     }
 }

@@ -167,7 +167,7 @@ describe('Engram', () => {
     vi.stubGlobal('fetch', mockOllamaFetch(REFLECT_RESPONSE));
     const result = await (
       await Engram.open(dbPath, { embedder, reflectModel: 'llama-test' })
-    ).reflect();
+    ).reflect({ counterEvidence: false, opinionGates: false });
     expect(result.status).toBe('completed');
     expect(result.factsProcessed).toBe(5);
   });

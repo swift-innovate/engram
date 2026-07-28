@@ -234,6 +234,7 @@ fn contains_escapes_percent_and_underscore() {
     // The param should have escaped % and _
     assert!(
         matches!(params[0], RusqValue::Text(ref s) if s == r"%100\% progress\_bar%"),
-        "unexpected param: {:?}", params[0]
+        "unexpected param: {:?}",
+        params[0]
     );
 }
