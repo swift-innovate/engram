@@ -6,7 +6,9 @@ Engram is a local-first semantic memory system for AI agents. Store, search, and
 
 ## MCP Server
 
-Engram connects as an MCP server via mcporter. All tool parameters use **camelCase**.
+Engram is an MCP server usable from any MCP-compatible client. The commands
+below use `mcporter` as one concrete client; all tool parameters use
+**camelCase**.
 
 ## Tool Reference
 
@@ -299,6 +301,20 @@ There is deliberately no `engram_context_expire` tool — TTL expiry is lazy
 
 ## Usage Patterns
 
+### Production turn lifecycle
+
+1. Before a context-dependent answer, call `engram_recall` and incorporate the
+   returned chunks, observations, and opinions into the response.
+2. After the turn, retain only durable facts, preferences, decisions, and
+   meaningful agent experiences. Set `sourceType`/`trustScore` to match the
+   author: `user_stated` for the user, `agent_generated`/`inferred` for the
+   agent, and `tool_result`/`external_doc` for untrusted external content.
+3. When the user corrects a recalled fact, call `engram_supersede` with its
+   chunk ID instead of keeping both facts active.
+4. Run extraction and reflection asynchronously or on a schedule, never in the
+   latency-critical response path. Avoid overlapping maintenance runs and
+   retry/report failures.
+
 ### Before answering a user question
 
 ```
@@ -329,10 +345,13 @@ There is deliberately no `engram_context_expire` tool — TTL expiry is lazy
 - Tool names are prefixed with the server name: `engram.engram_retain` not just `engram_retain`
 - Don't retain trivial messages ("ok", "thanks", "got it") — they add noise
 - Don't forget to run `engram_process_extractions` periodically to build the knowledge graph
+- The MCP server owns one live SQLite bank; use the library's `backup()` API
+  from the host/operator for backups rather than copying an open `.engram` file
 
 ## Configuration
 
-The Engram MCP server is configured in your mcporter config file (typically `config/mcporter.json`):
+Configure the Engram MCP server in your client's MCP settings. For example, an
+mcporter config file (typically `config/mcporter.json`) can contain:
 
 ```json
 {

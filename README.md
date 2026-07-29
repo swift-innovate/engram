@@ -765,29 +765,86 @@ Portable skill files for agents using Engram via mcporter:
 import { Engram, shouldRetain, formatForPrompt } from 'engram';
 
 const memory = await Engram.open('./agent.engram', {
-  reflectModel: 'llama3.1:8b', // required for the extraction/reflect timers below
+  // Required only for the background extraction/reflection work below.
+  reflectModel: 'llama3.1:8b',
+  retainMission:
+    'Keep durable user preferences, decisions, corrections, and project facts. Ignore small talk.',
 });
 
 async function agentLoop(userInput: string) {
-  const context = await memory.recall(userInput, { topK: 10 });
-  const block = formatForPrompt(context, { maxChars: 2000 });
+  // Recall before answering anything that depends on prior context.
+  const context = await memory.recall(userInput, {
+    topK: 10,
+    // Use 0 for a long-lived assistant; the library default (180) favors
+    // recent coding-session context over memories that are years old.
+    decayHalfLifeDays: 0,
+  });
+  const block = formatForPrompt(context, {
+    maxChars: 2000,
+    showProvenance: true,
+  });
 
   const response = await callLLM(userInput, block);
 
+  // Retain only durable content, with provenance that matches its author.
   if (shouldRetain(userInput).score >= 0.3) {
-    await memory.retain(userInput, { memoryType: 'experience', sourceType: 'user_stated', trustScore: 0.85 });
+    await memory.retain(userInput, {
+      memoryType: 'world',
+      sourceType: 'user_stated',
+      trustScore: 0.9,
+    });
   }
   if (shouldRetain(response).score >= 0.3) {
-    await memory.retain(response, { memoryType: 'experience', sourceType: 'agent_generated', trustScore: 0.6 });
+    await memory.retain(response, {
+      memoryType: 'experience',
+      sourceType: 'agent_generated',
+      trustScore: 0.6,
+    });
   }
 
   return response;
 }
 
-// Background ticks
-setInterval(() => memory.processExtractions(10), 5 * 60 * 1000);
-setInterval(() => memory.reflect(), 6 * 60 * 60 * 1000);
+// Background maintenance: never block a user turn or overlap runs.
+let maintenanceRunning = false;
+async function consolidateMemory(): Promise<void> {
+  if (maintenanceRunning) return;
+  maintenanceRunning = true;
+  try {
+    await memory.processExtractions(10);
+    await memory.reflect();
+  } catch (error) {
+    console.warn('Engram maintenance failed; it will retry later.', error);
+  } finally {
+    maintenanceRunning = false;
+  }
+}
+
+const maintenanceTimer = setInterval(
+  () => void consolidateMemory(),
+  6 * 60 * 60 * 1000,
+);
+
+async function shutdown(): Promise<void> {
+  clearInterval(maintenanceTimer);
+  memory.close();
+}
 ```
+
+Use a stable, persistent path per agent identity. Back up a live bank with
+`await memory.backup('./backups/my-agent.engram')`, not a raw file copy: WAL
+mode may leave the main `.engram` file accompanied by sidecars while it is open.
+
+| Content being retained | `memoryType` | `sourceType` | Typical trust |
+|---|---|---|---|
+| User preference, instruction, or confirmed fact | `world` | `user_stated` | 0.85–0.95 |
+| What the agent did or concluded | `experience` | `agent_generated` or `inferred` | 0.5–0.7 |
+| Tool/API/web output | `world` or `experience` | `tool_result` or `external_doc` | 0.2–0.6 |
+
+When new information corrects a recalled chunk, call `supersede(oldChunkId,
+newText, options)` rather than retaining a conflicting fact. The old ID is
+available on each recall result. External and tool-derived content stays in a
+lower source tier, so it cannot override a user-stated directive.
 
 ### Adapter Layer (Recommended)
 

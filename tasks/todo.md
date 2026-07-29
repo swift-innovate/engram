@@ -100,3 +100,7 @@ before_agent_start) and any consumer-side "draft the skill file" flow.
 ## Maintenance review (2026-07-28)
 
 - [x] Fix retain batch/lifecycle races, reflection gate ordering, and scheduler setup validation.
+
+## Agent integration documentation (2026-07-29)
+
+- [x] Add a production lifecycle checklist to README and transport-specific agent skills.

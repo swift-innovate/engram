@@ -35,6 +35,8 @@ whether and how to call it** — not a man page.
   `requeue-failed` re-drives items stranded by an outage (see its section below).
   `reflect --suggest` also proposes procedural suggestions — recurring
   patterns worth codifying — readable via `suggestions` (see its section below).
+  Keep maintenance out of the latency-critical turn path, prevent overlapping
+  runs in the host scheduler, and surface failures for retry.
 
 ## Setup
 
@@ -43,6 +45,11 @@ Point the CLI at a database via `--db <path>` on each call, or set it once:
 ```bash
 export ENGRAM_DB=./agent.engram
 ```
+
+Keep that path stable for one agent identity. For long-lived assistant memory,
+pass `--decay-half-life-days 0` to recall so old but relevant memories do not
+silently decay away. Backup is host/operator work: use the library's SQLite
+online-backup API, not a raw copy of an open `.engram` file.
 
 `--db` wins over `ENGRAM_DB`. If neither is set the command exits 1.
 
@@ -390,6 +397,7 @@ engram recall "relevant keywords" --top-k 5 --json
 
 # 3. … answer the user …
 
-# 4. retain new facts/decisions; supersede on correction
-engram retain "decision just made" --memory-type world --trust-score 0.8 --json
+# 4. retain durable facts/decisions with provenance; supersede on correction
+engram retain "decision just made" \
+  --memory-type world --source-type user_stated --trust-score 0.9 --json
 ```
