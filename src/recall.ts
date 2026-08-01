@@ -16,6 +16,7 @@
 
 import Database from 'better-sqlite3';
 import { embeddingToBuffer, type EmbeddingProvider } from './retain.js';
+import { bufferToFloat32Array, cosineSimilarity } from './insight-shared.js';
 import { parseTemporalQuery } from './temporal-parser.js';
 
 // =============================================================================
@@ -206,6 +207,19 @@ export interface RecallOptions {
    */
   minScore?: number;
   /**
+   * Cosine-similarity floor for the opinions/observations attached to a
+   * response (default 0.45). Insights are ranked semantically against the
+   * query when they carry embeddings; anything below this floor is dropped
+   * rather than padded in, so an off-topic query returns NO beliefs instead
+   * of the highest-confidence ones it happens to hold.
+   *
+   * This gate applies ONLY to the embedded path. Rows without an embedding
+   * (formed before the column existed, or without an embedder) fall back to
+   * the legacy keyword match, which has no relevance score to gate on.
+   * Set to 0 to keep every embedded insight ranked but unfiltered.
+   */
+  insightMinScore?: number;
+  /**
    * When true, each result gains a `strategyScores` breakdown: the
    * per-strategy rank/RRF-contribution that fed fusion for this chunk, the
    * pre-weighting fused score, and the individual weighting multipliers
@@ -270,18 +284,24 @@ export interface RecallResponse {
    * match overall.
    */
   results: RecallResult[];
-  opinions: Array<{
-    belief: string;
-    confidence: number;
-    domain: string | null;
-  }>;
-  observations: Array<{
-    summary: string;
-    domain: string | null;
-    topic: string | null;
-  }>;
+  opinions: RecallOpinion[];
+  observations: RecallObservation[];
   totalCandidates: number;
   strategiesUsed: string[];
+}
+
+/** A belief attached to a recall response. */
+export interface RecallOpinion {
+  belief: string;
+  confidence: number;
+  domain: string | null;
+}
+
+/** A synthesized observation attached to a recall response. */
+export interface RecallObservation {
+  summary: string;
+  domain: string | null;
+  topic: string | null;
 }
 
 // Internal types for per-strategy results
@@ -1011,6 +1031,144 @@ function applyWeighting(
 }
 
 // =============================================================================
+// Insight (opinion / observation) selection
+// =============================================================================
+
+/** Max opinions or observations attached to one recall response. */
+const INSIGHT_LIMIT = 5;
+
+interface OpinionInsightRow {
+  belief: string;
+  confidence: number;
+  domain: string | null;
+  embedding?: Buffer | null;
+}
+
+interface ObservationInsightRow {
+  summary: string;
+  domain: string | null;
+  topic: string | null;
+  embedding?: Buffer | null;
+}
+
+interface SelectInsightsArgs<TRow, TOut> {
+  db: Database.Database;
+  /**
+   * Normalized query terms (lowercased, punctuation-stripped, longer than 3
+   * characters) used by the lexical path. Empty means the query carried no
+   * usable term, in which case the lexical path matches nothing.
+   */
+  queryTerms: string[];
+  table: 'opinions' | 'observations';
+  /** Column holding the human-readable text (belief / summary). */
+  textColumn: 'belief' | 'summary';
+  /** Projection list for the SELECT, excluding `embedding`. */
+  columns: string;
+  /** Extra always-ANDed predicate beyond `is_active = TRUE`, if any. */
+  extraWhere?: string;
+  /** ORDER BY used on the lexical path only. */
+  lexicalOrder: string;
+  getQueryEmbedding: () => Promise<Float32Array>;
+  insightMinScore: number;
+  project: (row: TRow) => TOut;
+}
+
+/**
+ * Select the insights attached to a recall response.
+ *
+ * Synthesized context is query-scoped: opinions and observations are generated
+ * material, so they must never enter a prompt merely because the store holds
+ * them. Both paths below can legitimately return nothing, and an empty list is
+ * the correct answer for a query the store has no belief about.
+ *
+ * Two paths coexist:
+ *
+ * 1. **Semantic** — rows carrying an embedding are cosine-ranked against the
+ *    query and gated by `insightMinScore`. This is the intended path.
+ * 2. **Lexical** — `LIKE '%term%'` over the text column, ordered by
+ *    confidence/recency. It ranks nothing by relevance: ordinary query words
+ *    match a large fraction of beliefs, so its top-N is close to constant
+ *    across unrelated questions. It survives only for rows with no embedding.
+ *
+ * Which runs depends on the store, so the improvement is monotonic and no
+ * existing deployment regresses: a bank with nothing embedded behaves exactly
+ * as before, a fully-embedded bank is purely semantic, and the mixed state a
+ * backfill passes through puts semantic hits first and fills any remaining
+ * slots lexically from the un-embedded rows.
+ */
+async function selectInsights<TRow extends { embedding?: Buffer | null }, TOut>(
+  args: SelectInsightsArgs<TRow, TOut>,
+): Promise<TOut[]> {
+  const {
+    db,
+    queryTerms,
+    table,
+    textColumn,
+    columns,
+    extraWhere,
+    lexicalOrder,
+    getQueryEmbedding,
+    insightMinScore,
+    project,
+  } = args;
+
+  const baseWhere = `is_active = TRUE${extraWhere ? ` AND ${extraWhere}` : ''}`;
+
+  const embeddedRows = db
+    .prepare(
+      `SELECT ${columns}, embedding FROM ${table}
+       WHERE ${baseWhere} AND embedding IS NOT NULL`,
+    )
+    .all() as TRow[];
+
+  const selected: TOut[] = [];
+  const takenText = new Set<string>();
+
+  if (embeddedRows.length > 0) {
+    const queryEmbedding = await getQueryEmbedding();
+    const scored: Array<{ row: TRow; score: number }> = [];
+    for (const row of embeddedRows) {
+      if (!row.embedding) continue;
+      const score = cosineSimilarity(
+        queryEmbedding,
+        bufferToFloat32Array(row.embedding),
+      );
+      if (score >= insightMinScore) scored.push({ row, score });
+    }
+    scored.sort((a, b) => b.score - a.score);
+    for (const { row } of scored.slice(0, INSIGHT_LIMIT)) {
+      takenText.add(String((row as Record<string, unknown>)[textColumn]));
+      selected.push(project(row));
+    }
+    if (selected.length >= INSIGHT_LIMIT) return selected;
+  }
+
+  // Lexical path — for the un-embedded remainder (or the whole table, on a
+  // store with no embeddings at all).
+  if (queryTerms.length === 0) return selected;
+  const embeddingClause =
+    embeddedRows.length > 0 ? ' AND embedding IS NULL' : '';
+  const conditions = queryTerms
+    .map(() => `LOWER(${textColumn}) LIKE ?`)
+    .join(' OR ');
+  const rows = db
+    .prepare(
+      `SELECT ${columns} FROM ${table}
+       WHERE ${baseWhere}${embeddingClause} AND (${conditions})
+       ORDER BY ${lexicalOrder}
+       LIMIT ${INSIGHT_LIMIT - selected.length}`,
+    )
+    .all(...queryTerms.map((t) => `%${t}%`)) as TRow[];
+  for (const row of rows) {
+    const text = String((row as Record<string, unknown>)[textColumn]);
+    if (takenText.has(text)) continue;
+    takenText.add(text);
+    selected.push(project(row));
+  }
+  return selected;
+}
+
+// =============================================================================
 // Main Recall Function
 // =============================================================================
 
@@ -1041,8 +1199,26 @@ export async function recall(
     scope = ['durable'],
     parentRef,
     minScore,
+    insightMinScore = 0.45,
     explainScores = false,
   } = options;
+
+  // The query embedding is needed by the semantic strategy AND by insight
+  // (opinion/observation) ranking, which are independently switchable — so it
+  // is computed lazily and memoized rather than up front. A caller that
+  // disables the semantic strategy and both insight kinds still pays nothing.
+  let queryEmbeddingPromise: Promise<Float32Array> | null = null;
+  const getQueryEmbedding = (): Promise<Float32Array> => {
+    queryEmbeddingPromise ??=
+      'embedQuery' in embedder
+        ? (
+            embedder as EmbeddingProvider & {
+              embedQuery: (t: string) => Promise<Float32Array>;
+            }
+          ).embedQuery(query)
+        : embedder.embed(query);
+    return queryEmbeddingPromise;
+  };
 
   const tiers = { ...DEFAULT_SOURCE_TIERS, ...sourceTiers };
   const tierOf = (sourceType: string): number =>
@@ -1098,14 +1274,7 @@ export async function recall(
 
   // Run strategies
   if (strategies.includes('semantic')) {
-    const queryEmbedding =
-      'embedQuery' in embedder
-        ? await (
-            embedder as EmbeddingProvider & {
-              embedQuery: (t: string) => Promise<Float32Array>;
-            }
-          ).embedQuery(query)
-        : await embedder.embed(query);
+    const queryEmbedding = await getQueryEmbedding();
     const results = withTierZeroReserve((f, limit) =>
       semanticSearch(db, queryEmbedding, limit, f),
     );
@@ -1230,58 +1399,44 @@ export async function recall(
     ),
   ];
 
-  // Gather relevant opinions
+  // Gather relevant opinions.
+  //
+  // Semantic-primary when the store carries belief embeddings, lexical when it
+  // doesn't — see selectInsights().
   const opinions = includeOpinions
-    ? (() => {
-        if (synthesizedQueryTerms.length > 0) {
-          const conditions = synthesizedQueryTerms
-            .map(() => `LOWER(belief) LIKE ?`)
-            .join(' OR ');
-          return db
-            .prepare(
-              `
-            SELECT belief, confidence, domain
-            FROM opinions
-            WHERE is_active = TRUE AND confidence >= 0.5 AND (${conditions})
-            ORDER BY confidence DESC
-            LIMIT 5
-          `,
-            )
-            .all(...synthesizedQueryTerms.map((term) => `%${term}%`)) as Array<{
-            belief: string;
-            confidence: number;
-            domain: string | null;
-          }>;
-        }
-        return [];
-      })()
+    ? await selectInsights<OpinionInsightRow, RecallOpinion>({
+        db,
+        queryTerms: synthesizedQueryTerms,
+        table: 'opinions',
+        textColumn: 'belief',
+        columns: 'belief, confidence, domain',
+        // Weakly-held beliefs are gated out of recall (introspect() is the
+        // no-floor surface); unchanged from the pre-embedding behavior.
+        extraWhere: 'confidence >= 0.5',
+        lexicalOrder: 'confidence DESC',
+        getQueryEmbedding,
+        insightMinScore,
+        project: ({ belief, confidence, domain }) => ({
+          belief,
+          confidence,
+          domain,
+        }),
+      })
     : [];
 
-  // Gather relevant observations
+  // Gather relevant observations (same two-path selection as opinions).
   const observations = includeObservations
-    ? (() => {
-        if (synthesizedQueryTerms.length > 0) {
-          const conditions = synthesizedQueryTerms
-            .map(() => `LOWER(summary) LIKE ?`)
-            .join(' OR ');
-          return db
-            .prepare(
-              `
-            SELECT summary, domain, topic
-            FROM observations
-            WHERE is_active = TRUE AND (${conditions})
-            ORDER BY last_refreshed DESC, synthesized_at DESC
-            LIMIT 5
-          `,
-            )
-            .all(...synthesizedQueryTerms.map((term) => `%${term}%`)) as Array<{
-            summary: string;
-            domain: string | null;
-            topic: string | null;
-          }>;
-        }
-        return [];
-      })()
+    ? await selectInsights<ObservationInsightRow, RecallObservation>({
+        db,
+        queryTerms: synthesizedQueryTerms,
+        table: 'observations',
+        textColumn: 'summary',
+        columns: 'summary, domain, topic',
+        lexicalOrder: 'last_refreshed DESC, synthesized_at DESC',
+        getQueryEmbedding,
+        insightMinScore,
+        project: ({ summary, domain, topic }) => ({ summary, domain, topic }),
+      })
     : [];
 
   return {
