@@ -259,6 +259,11 @@ CREATE TABLE IF NOT EXISTS opinions (
     -- cycles can test new evidence against it. NULL = never stated.
     would_change_this TEXT,
 
+    -- Belief embedding, same LE-f32 space as chunks.embedding. Drives
+    -- relevance ranking of opinions at recall; NULL when formed without an
+    -- embedder (recall then falls back to keyword matching for this row).
+    embedding BLOB,
+
     -- Lifecycle
     formed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     last_reinforced TIMESTAMP,
@@ -291,6 +296,11 @@ CREATE TABLE IF NOT EXISTS observations (
     -- author). Stamped on insert; a refresh (updateObsSimple) leaves it untouched.
     -- NULL = pre-distribution / unknown origin.
     node_origin TEXT,
+
+    -- Summary embedding, same LE-f32 space as chunks.embedding. Drives
+    -- relevance ranking of observations at recall; NULL when synthesized
+    -- without an embedder. Rewritten on refresh, since the summary changes.
+    embedding BLOB,
 
     -- Lifecycle
     synthesized_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,

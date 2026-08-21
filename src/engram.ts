@@ -93,6 +93,7 @@ import {
 import {
   reflect,
   reflectCatchUp,
+  backfillInsightEmbeddings,
   ReflectScheduler,
   getBeliefJournal,
   DEFAULT_OPINION_GATES,
@@ -106,6 +107,7 @@ import {
   type BeliefJournalAction,
   type BeliefJournalEntry,
   type BeliefJournalQuery,
+  type BackfillInsightEmbeddingsResult,
 } from './reflect.js';
 
 import {
@@ -177,6 +179,7 @@ export type {
   BeliefJournalAction,
   BeliefJournalEntry,
   BeliefJournalQuery,
+  BackfillInsightEmbeddingsResult,
   SuggestionConfig,
   SuggestionGates,
   SuggestionKind,
@@ -210,6 +213,7 @@ export {
   OllamaEmbeddings,
   LocalEmbedder,
   reflectCatchUp,
+  backfillInsightEmbeddings,
   ReflectScheduler,
   getBeliefJournal,
   getSuggestions,
@@ -516,6 +520,27 @@ export class Engram {
     }>;
     if (!opinionFalsifierCols.some((c) => c.name === 'would_change_this')) {
       db.exec('ALTER TABLE opinions ADD COLUMN would_change_this TEXT');
+    }
+
+    // Migration: add insight embeddings to existing .engram files. Opinions
+    // and observations were retrieved at recall by SQL LIKE over their text
+    // with no relevance ordering (top-N by confidence/recency among whatever
+    // matched), so any query containing ordinary words returned a near-constant
+    // set of beliefs — the synthesized layer was the only part of the store not
+    // reachable semantically. Pre-existing rows stay NULL and keep the keyword
+    // path until backfilled (see backfillInsightEmbeddings), so this migration
+    // never changes behavior on its own.
+    const opinionEmbedCols = db.pragma('table_info(opinions)') as Array<{
+      name: string;
+    }>;
+    if (!opinionEmbedCols.some((c) => c.name === 'embedding')) {
+      db.exec('ALTER TABLE opinions ADD COLUMN embedding BLOB');
+    }
+    const obsEmbedCols = db.pragma('table_info(observations)') as Array<{
+      name: string;
+    }>;
+    if (!obsEmbedCols.some((c) => c.name === 'embedding')) {
+      db.exec('ALTER TABLE observations ADD COLUMN embedding BLOB');
     }
 
     // Establish this bank's stable node-origin identity. Generated exactly once,
@@ -842,6 +867,22 @@ export class Engram {
       embedder: this.embedder,
       ...options,
     });
+  }
+
+  /**
+   * Give opinions/observations formed before the `embedding` column existed a
+   * vector, so recall ranks them semantically rather than by keyword match.
+   *
+   * Normally unnecessary: `reflect()` runs a bounded backfill each cycle
+   * whenever an embedder is present. Call this directly to drain a large
+   * legacy backlog in one go (pass a bigger `limit`) instead of waiting for
+   * cycles to chip away at it. Bounded, resumable, and never rewrites an
+   * embedding that already exists. Library-only surface — not an MCP tool.
+   */
+  async backfillInsightEmbeddings(options?: {
+    limit?: number;
+  }): Promise<BackfillInsightEmbeddingsResult> {
+    return backfillInsightEmbeddings(this.db, this.embedder, options);
   }
 
   /**

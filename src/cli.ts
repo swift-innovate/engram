@@ -199,6 +199,9 @@ function buildRecallOptions(args: ParsedArgs): RecallOptions {
       '--no-observations',
     ),
     minScore: clampTrust(asNumber(args.values.get('--min-score'))),
+    insightMinScore: clampTrust(
+      asNumber(args.values.get('--insight-min-score')),
+    ),
     explainScores: args.bools.has('--explain-scores') ? true : undefined,
     decayHalfLifeDays: clampNonNegative(
       asNumber(args.values.get('--decay-half-life-days')),
@@ -437,6 +440,7 @@ recall options:
   --after <iso8601>  --before <iso8601>
   --[no-]opinions  --[no-]observations
   --min-score <0..1>               Drop results below this weighted score
+  --insight-min-score <0..1>       Cosine floor for attached opinions/observations (default 0.45)
   --explain-scores                 Include a strategyScores breakdown per result
                                    (results[0] is best-in-highest-tier, not
                                    best-overall; re-sort by score for that)

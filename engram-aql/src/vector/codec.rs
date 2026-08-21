@@ -20,10 +20,17 @@ pub fn decode_f32_le(bytes: &[u8]) -> Option<Vec<f32>> {
     if !bytes.len().is_multiple_of(4) {
         return None;
     }
+    // `as_chunks::<4>` over `chunks_exact(4)`: it yields `&[u8; 4]` directly,
+    // so `from_le_bytes` needs no re-indexing, and clippy's
+    // `chunks_exact_to_as_chunks` (new in Rust 1.98) requires it under
+    // `-D warnings`. The discarded remainder is always empty — the length
+    // check above guarantees a multiple of 4.
     Some(
         bytes
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| f32::from_le_bytes(*c))
             .collect(),
     )
 }

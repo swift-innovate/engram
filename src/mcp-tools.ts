@@ -156,6 +156,13 @@ export const ENGRAM_TOOLS = [
           description:
             'Drop results whose final weighted score (post trust/decay/strategy-boost weighting) falls below this threshold. Default: no filtering.',
         },
+        insightMinScore: {
+          type: 'number',
+          minimum: 0,
+          maximum: 1,
+          description:
+            'Cosine-similarity floor for the opinions/observations attached to the response (default: 0.45). Insights carrying embeddings are ranked semantically against the query; below-floor ones are dropped rather than padded in, so an off-topic query returns no beliefs instead of the most confident ones. Set 0 to rank without filtering.',
+        },
         explainScores: {
           type: 'boolean',
           description:
@@ -750,6 +757,7 @@ export function createEngramToolHandler(engram: Engram) {
                 ? input.includeObservations
                 : undefined,
             minScore: clampTrust(input.minScore),
+            insightMinScore: clampTrust(input.insightMinScore),
             explainScores:
               typeof input.explainScores === 'boolean'
                 ? input.explainScores
