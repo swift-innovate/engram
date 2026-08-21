@@ -203,8 +203,14 @@ async function seedWorkflow(
  * keep the intent (recent signal inside the window, ordered across distinct
  * days) true on any run date.
  */
+const FIXTURE_NOW = Date.now();
+
 function daysAgo(n: number): string {
-  return new Date(Date.now() - n * 86_400_000)
+  // Anchored to a single timestamp captured at import, NOT to Date.now() per
+  // call: several tests seed with one call and then assert a watermark
+  // against another, and a second ticking over between the two makes the
+  // strings differ by 1s. Same n must always yield the same string.
+  return new Date(FIXTURE_NOW - n * 86_400_000)
     .toISOString()
     .slice(0, 19)
     .replace('T', ' ');
