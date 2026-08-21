@@ -26,6 +26,46 @@ export function clampRationale(rationale: unknown): string | null {
   return trimmed ? trimmed.slice(0, 1000) : null;
 }
 
+/**
+ * Decode a stored embedding BLOB (LE-f32, the same layout retain.ts's
+ * `embeddingToBuffer` writes) back into a Float32Array.
+ *
+ * Moved here from suggest.ts when opinions/observations gained embeddings —
+ * three insight kinds now decode the same BLOB layout, so the codec belongs
+ * beside the other shared helpers rather than being copied a third time.
+ */
+export function bufferToFloat32Array(buf: Buffer): Float32Array {
+  return new Float32Array(
+    buf.buffer,
+    buf.byteOffset,
+    buf.byteLength / Float32Array.BYTES_PER_ELEMENT,
+  );
+}
+
+/**
+ * Plain-JS cosine similarity — no sqlite-vec dependency.
+ *
+ * The insight tables (opinions/observations/suggestions) are small (hundreds
+ * to low thousands of rows), so ranking them in JS avoids requiring sqlite-vec
+ * on connections that may not have loaded it (reflect opens its own).
+ * Mismatched or zero-length vectors score 0 rather than throwing, so a bank
+ * carrying embeddings from an older model degrades to "no match" instead of
+ * crashing recall.
+ */
+export function cosineSimilarity(a: Float32Array, b: Float32Array): number {
+  if (a.length !== b.length || a.length === 0) return 0;
+  let dot = 0;
+  let normA = 0;
+  let normB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  if (normA === 0 || normB === 0) return 0;
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+}
+
 /** Normalize text for lexical belief/summary comparison: lowercase, strip punctuation, collapse whitespace. */
 export function normalizeBelief(text: string): string {
   return text

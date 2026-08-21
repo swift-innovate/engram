@@ -27,7 +27,7 @@ import {
   formatPreflightFailure,
 } from './model-resolver.js';
 import { recall } from './recall.js';
-import type { EmbeddingProvider } from './retain.js';
+import { embeddingToBuffer, type EmbeddingProvider } from './retain.js';
 import {
   stripPromptMarkers,
   clampRationale,
@@ -1074,6 +1074,131 @@ function parseCounterEvidenceOutput(
 }
 
 // =============================================================================
+// Insight-Embedding Backfill
+// =============================================================================
+
+/** Outcome of one bounded {@link backfillInsightEmbeddings} pass. */
+export interface BackfillInsightEmbeddingsResult {
+  opinionsEmbedded: number;
+  observationsEmbedded: number;
+  /** Rows across both tables still lacking an embedding after this pass. */
+  remaining: number;
+}
+
+/**
+ * Default rows embedded per {@link backfillInsightEmbeddings} call. Sized so
+ * a reflect cycle absorbs the work without a noticeable stall (in-process
+ * embedding is tens of ms per row); a large legacy store drains over several
+ * cycles rather than blocking one.
+ */
+export const DEFAULT_INSIGHT_BACKFILL_LIMIT = 200;
+
+/**
+ * Give opinions/observations that predate the `embedding` column a vector, so
+ * recall can rank them semantically instead of falling back to keyword
+ * matching.
+ *
+ * Bounded and resumable: each call embeds at most `limit` rows (oldest first)
+ * and reports what remains, so repeated calls drain a backlog. Safe to run
+ * concurrently with normal operation — it only fills NULLs and never rewrites
+ * a vector that already exists. A row whose embedding call throws is left
+ * NULL and retried on a later pass.
+ */
+export async function backfillInsightEmbeddings(
+  db: Database.Database,
+  embedder: EmbeddingProvider,
+  options: { limit?: number } = {},
+): Promise<BackfillInsightEmbeddingsResult> {
+  const limit = options.limit ?? DEFAULT_INSIGHT_BACKFILL_LIMIT;
+  const result: BackfillInsightEmbeddingsResult = {
+    opinionsEmbedded: 0,
+    observationsEmbedded: 0,
+    remaining: 0,
+  };
+  if (limit <= 0) return countRemainingInsightEmbeddings(db, result);
+
+  const updateOpinion = db.prepare(
+    `UPDATE opinions SET embedding = ? WHERE id = ? AND embedding IS NULL`,
+  );
+  const updateObs = db.prepare(
+    `UPDATE observations SET embedding = ? WHERE id = ? AND embedding IS NULL`,
+  );
+
+  // Opinions first: they are the higher-signal surface at recall (a belief
+  // shown to the model carries more weight than a summary) and the smaller
+  // table in practice.
+  const opinionRows = db
+    .prepare(
+      `SELECT id, belief AS text FROM opinions
+       WHERE embedding IS NULL AND is_active = TRUE
+       ORDER BY formed_at ASC LIMIT ?`,
+    )
+    .all(limit) as Array<{ id: string; text: string }>;
+
+  const obsBudget = limit - opinionRows.length;
+  const obsRows =
+    obsBudget > 0
+      ? (db
+          .prepare(
+            `SELECT id, summary AS text FROM observations
+             WHERE embedding IS NULL AND is_active = TRUE
+             ORDER BY synthesized_at ASC LIMIT ?`,
+          )
+          .all(obsBudget) as Array<{ id: string; text: string }>)
+      : [];
+
+  for (const row of opinionRows) {
+    const buf = await embedInsightText(embedder, row.text);
+    if (!buf) continue;
+    updateOpinion.run(buf, row.id);
+    result.opinionsEmbedded++;
+  }
+  for (const row of obsRows) {
+    const buf = await embedInsightText(embedder, row.text);
+    if (!buf) continue;
+    updateObs.run(buf, row.id);
+    result.observationsEmbedded++;
+  }
+
+  return countRemainingInsightEmbeddings(db, result);
+}
+
+/** Embed one insight, returning null (with a warning) instead of throwing. */
+async function embedInsightText(
+  embedder: EmbeddingProvider,
+  text: string,
+): Promise<Buffer | null> {
+  if (!text) return null;
+  try {
+    return embeddingToBuffer(await embedder.embed(text));
+  } catch (err) {
+    console.warn(
+      `[Reflect] Skipping an insight during embedding backfill: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+    return null;
+  }
+}
+
+function countRemainingInsightEmbeddings(
+  db: Database.Database,
+  result: BackfillInsightEmbeddingsResult,
+): BackfillInsightEmbeddingsResult {
+  const row = db
+    .prepare(
+      `SELECT
+         (SELECT COUNT(*) FROM opinions
+           WHERE embedding IS NULL AND is_active = TRUE)
+       + (SELECT COUNT(*) FROM observations
+           WHERE embedding IS NULL AND is_active = TRUE) AS remaining`,
+    )
+    .get() as { remaining: number };
+  result.remaining = row.remaining;
+  return result;
+}
+
+// =============================================================================
 // Core Reflect Operation
 // =============================================================================
 
@@ -1313,6 +1438,31 @@ export async function reflect(config: ReflectConfig): Promise<ReflectResult> {
       } catch (err) {
         console.warn(
           `[Reflect] Suggestion pass failed (${(err as Error).message}) — proceeding without it.`,
+        );
+      }
+    }
+
+    // 0.75. Backfill embeddings for insights formed before the column
+    // existed. Like the suggestion pass, this runs BEFORE the
+    // minFactsThreshold early return: a store in the intended steady state
+    // (nothing left worth reflecting on) is exactly the store that would
+    // otherwise never backfill. Bounded per cycle, own try/catch, and purely
+    // additive — until a row is backfilled, recall just retrieves it the old
+    // keyword way. See backfillInsightEmbeddings().
+    if (embedder) {
+      try {
+        const filled = await backfillInsightEmbeddings(db, embedder);
+        if (filled.opinionsEmbedded + filled.observationsEmbedded > 0) {
+          console.log(
+            `[Reflect] Backfilled insight embeddings: ` +
+              `${filled.opinionsEmbedded} opinion(s), ` +
+              `${filled.observationsEmbedded} observation(s), ` +
+              `${filled.remaining} remaining.`,
+          );
+        }
+      } catch (err) {
+        console.warn(
+          `[Reflect] Insight-embedding backfill failed (${(err as Error).message}) — proceeding without it.`,
         );
       }
     }
@@ -1610,6 +1760,44 @@ export async function reflect(config: ReflectConfig): Promise<ReflectResult> {
       };
     };
 
+    // Embed every belief/summary this cycle is about to write, BEFORE the
+    // transaction: better-sqlite3 transactions are synchronous, so there is
+    // no place to await inside applyTransaction. Keyed by text, so a value
+    // written by more than one path is embedded once.
+    //
+    // Best-effort by design — an embedding failure leaves that row's
+    // `embedding` NULL and recall falls back to the keyword path for it,
+    // which is strictly better than failing the whole reflect cycle over a
+    // ranking optimization.
+    const insightEmbeddings = new Map<string, Buffer>();
+    if (embedder) {
+      const toEmbed = new Set<string>([
+        ...output.observations.map((o) => o.summary),
+        ...output.observation_refreshes.map((r) => r.updated_summary),
+        ...output.opinion_updates
+          .filter((u) => u.direction === 'new')
+          .map((u) => u.belief),
+      ]);
+      for (const text of toEmbed) {
+        if (!text) continue;
+        try {
+          insightEmbeddings.set(
+            text,
+            embeddingToBuffer(await embedder.embed(text)),
+          );
+        } catch (err) {
+          console.warn(
+            `[Reflect] Failed to embed an insight; it will be stored without ` +
+              `an embedding and retrieved by keyword only: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+          );
+        }
+      }
+    }
+    const embeddingFor = (text: string): Buffer | null =>
+      insightEmbeddings.get(text) ?? null;
+
     // 4. Apply results in a transaction
     const applyTransaction = db.transaction(() => {
       const now = new Date().toISOString();
@@ -1618,17 +1806,22 @@ export async function reflect(config: ReflectConfig): Promise<ReflectResult> {
       // Shared with the dedup-into-refresh branch below and with the
       // Observation Refreshes loop — same merge-and-bump-refresh-count
       // update either way.
+      // The embedding is rewritten alongside the summary — a refresh changes
+      // the text, so a stale vector would rank the row against wording it no
+      // longer has. COALESCE keeps the existing vector when this cycle had no
+      // embedder, rather than blanking one an earlier cycle wrote.
       const updateObsSimple = db.prepare(`
         UPDATE observations
         SET summary = ?,
             source_chunks = ?,
             last_refreshed = ?,
-            refresh_count = refresh_count + 1
+            refresh_count = refresh_count + 1,
+            embedding = COALESCE(?, embedding)
         WHERE id = ?
       `);
       const insertObs = db.prepare(`
-        INSERT INTO observations (id, summary, source_chunks, source_entities, domain, topic, synthesized_at, node_origin)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO observations (id, summary, source_chunks, source_entities, domain, topic, synthesized_at, node_origin, embedding)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       for (const obs of output.observations) {
         // A "new" observation that actually matches an existing one (same
@@ -1654,6 +1847,7 @@ export async function reflect(config: ReflectConfig): Promise<ReflectResult> {
             obs.summary,
             JSON.stringify(mergedSources),
             now,
+            embeddingFor(obs.summary),
             existingMatch.id,
           );
           result.observationsUpdated++;
@@ -1671,6 +1865,7 @@ export async function reflect(config: ReflectConfig): Promise<ReflectResult> {
           obs.topic,
           now,
           nodeOrigin,
+          embeddingFor(obs.summary),
         );
         result.observationsCreated++;
       }
@@ -1691,6 +1886,7 @@ export async function reflect(config: ReflectConfig): Promise<ReflectResult> {
             refresh.updated_summary,
             JSON.stringify(mergedSources),
             now,
+            embeddingFor(refresh.updated_summary),
             refresh.existing_observation_id,
           );
           result.observationsUpdated++;
@@ -1702,8 +1898,8 @@ export async function reflect(config: ReflectConfig): Promise<ReflectResult> {
       // the counter-evidence pass found (sub-threshold) contradictions;
       // otherwise '[]' / NULL — identical to the column defaults.
       const insertOpinion = db.prepare(`
-        INSERT INTO opinions (id, belief, confidence, supporting_chunks, contradicting_chunks, domain, related_entities, formed_at, last_challenged, evidence_count, node_origin, would_change_this)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO opinions (id, belief, confidence, supporting_chunks, contradicting_chunks, domain, related_entities, formed_at, last_challenged, evidence_count, node_origin, would_change_this, embedding)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       // Falsifier backfill (issue #38 item 3): an opinion formed before the
       // field existed (or whose model omitted it) picks one up from a later
@@ -1974,6 +2170,7 @@ export async function reflect(config: ReflectConfig): Promise<ReflectResult> {
             supportingIds.length,
             nodeOrigin,
             clampRationale(opUpdate.would_change_this),
+            embeddingFor(opUpdate.belief),
           );
           result.opinionsFormed++;
           journal('formed', opinionId, opUpdate, {
