@@ -226,7 +226,7 @@ describe('belief journal — journaling without gates', () => {
     expect(JSON.parse(rows[1].supporting_chunks)).toEqual([]);
   });
 
-  it('journals unmatched reinforce/challenge verdicts as rejected/no_matching_opinion', async () => {
+  it('adopts an unmatched reinforce as a formation candidate, and journals an unmatched challenge as no_matching_opinion', async () => {
     dbPath = tmpDbPath();
     const ids = await seedFacts(dbPath, 5);
     vi.stubGlobal(
@@ -249,19 +249,25 @@ describe('belief journal — journaling without gates', () => {
       dbPath,
       reflectModel: 'llama-test',
     });
-    // No matching opinions exist: both verdicts drop — but now audibly.
+    // No matching opinion exists for either verdict, but they are not
+    // symmetric. A `reinforce` asserts a proposition, so it is adopted as a
+    // formation candidate rather than discarded; a `challenge` only names a
+    // belief to weaken, and with no such belief there is nothing to adopt.
     expect(result.opinionsReinforced).toBe(0);
+    expect(result.opinionsFormed).toBe(1);
     expect(result.opinionsChallenged).toBe(0);
     // Not gate rejections: the gate counter stays 0.
     expect(result.opinionsRejected).toBe(0);
 
     const rows = allJournalRows(dbPath);
     expect(rows).toHaveLength(2);
-    for (const row of rows) {
-      expect(row.action).toBe('rejected');
-      expect(row.opinion_id).toBeNull();
-      expect(JSON.parse(row.gate_results).reason).toBe('no_matching_opinion');
-    }
+    expect(rows[0].action).toBe('formed');
+    expect(rows[0].opinion_id).not.toBeNull();
+    expect(JSON.parse(rows[0].supporting_chunks)).toEqual([ids[0]]);
+
+    expect(rows[1].action).toBe('rejected');
+    expect(rows[1].opinion_id).toBeNull();
+    expect(JSON.parse(rows[1].gate_results).reason).toBe('no_matching_opinion');
     // Challenge evidence lands on the contradicting side.
     expect(JSON.parse(rows[1].contradicting_chunks)).toEqual([ids[1]]);
 
@@ -281,6 +287,37 @@ describe('belief journal — journaling without gates', () => {
     db.close();
     expect(unreflected).toBe(0);
     expect(shrinkHint).toBeUndefined();
+  });
+
+  it('holds an adopted unmatched reinforce to the same formation gates', async () => {
+    dbPath = tmpDbPath();
+    const ids = await seedFacts(dbPath, 5);
+    vi.stubGlobal(
+      'fetch',
+      mockOllamaFetch(
+        opinionUpdateResponse([
+          newOpinion([ids[0]], { direction: 'reinforce' }),
+        ]),
+      ),
+    );
+
+    // Adoption is not a bypass: one same-day chunk fails the default-shaped
+    // gates exactly as an equivalent `direction: 'new'` candidate would.
+    const result = await reflect({
+      counterEvidence: false,
+      opinionGates: { minEvidenceCount: 3, minDistinctDays: 2 },
+      dbPath,
+      reflectModel: 'llama-test',
+    });
+    expect(result.opinionsFormed).toBe(0);
+    expect(result.opinionsRejected).toBe(1);
+
+    const rows = allJournalRows(dbPath);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].action).toBe('rejected');
+    const gateResults = JSON.parse(rows[0].gate_results);
+    expect(gateResults.reason).toBe('insufficient_evidence');
+    expect(gateResults.gates.min_evidence_count.pass).toBe(false);
   });
 });
 

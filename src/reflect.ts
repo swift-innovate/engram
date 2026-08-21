@@ -830,8 +830,10 @@ const REJECTED_LOOKBACK_ROWS = 200;
  * domain, exact-or-fuzzy match — the same 0.85 similarity bar as opinion
  * dedup), so its evidence can count toward this cycle's gates. Only
  * gate rejections (`reason: insufficient_evidence`) participate;
- * `no_matching_opinion` rows are dropped reinforce/challenge verdicts, not
- * formation candidates.
+ * `no_matching_opinion` rows are dropped challenge verdicts, not formation
+ * candidates. (Unmatched `reinforce` verdicts no longer land here at all —
+ * they are adopted as formation candidates and journaled on their own
+ * merits.)
  */
 function findPriorRejection(
   db: Database.Database,
@@ -1579,9 +1581,11 @@ export async function reflect(config: ReflectConfig): Promise<ReflectResult> {
           opUpdate.belief,
           opUpdate.domain,
         );
-        const isReinforcement =
-          opUpdate.direction === 'reinforce' ? true : Boolean(existing);
-        if (opUpdate.direction === 'reinforce' && !existing) continue; // unmatched — drops anyway
+        // A verdict is a reinforcement iff it actually matched an existing
+        // opinion — the LLM's own label does not decide this. An unmatched
+        // `reinforce` is a fresh proposition (see the apply path below), so it
+        // needs the same gate preflight and counter-evidence audit as `new`.
+        const isReinforcement = Boolean(existing);
         if (isReinforcement && !onReinforce) continue;
 
         // Formation gates are cheap, local checks. Run them before retrieval
@@ -2057,22 +2061,73 @@ export async function reflect(config: ReflectConfig): Promise<ReflectResult> {
         opIndex++
       ) {
         const opUpdate = output.opinion_updates[opIndex];
-        if (opUpdate.direction === 'new') {
-          // A belief re-stated as "new" that actually matches an existing
-          // opinion (same dedup match used by reinforce/challenge) is a
-          // reinforcement, not a fresh row — otherwise a belief the LLM
-          // keeps re-deriving as "new" accumulates duplicate opinion rows
-          // every cycle instead of strengthening one.
+        if (opUpdate.direction === 'challenge') {
           const existing = findMatchingOpinion(
             existingOps,
             opUpdate.belief,
             opUpdate.domain,
           );
           if (existing) {
-            reinforceExisting(existing, opUpdate, opIndex);
-            continue;
+            const clampedDelta = Math.max(
+              -0.15,
+              Math.min(0, opUpdate.confidence_delta),
+            );
+            const mergedContradicting = [
+              ...new Set([
+                ...existing.contradicting_chunks,
+                ...opUpdate.evidence_chunk_ids,
+              ]),
+            ];
+            challengeOpinion.run(
+              clampedDelta,
+              JSON.stringify(mergedContradicting),
+              now,
+              now,
+              existing.id,
+            );
+            result.opinionsChallenged++;
+            journal('challenged', existing.id, opUpdate, {
+              contradicting: opUpdate.evidence_chunk_ids.filter(Boolean),
+            });
+          } else {
+            // Still a drop, deliberately: a challenge names a belief to
+            // weaken. With no such belief there is nothing to adopt — the
+            // model is disputing something this store never held. Unlike an
+            // unmatched `reinforce` (below), it asserts no proposition.
+            journal('rejected', null, opUpdate, {
+              contradicting: opUpdate.evidence_chunk_ids.filter(Boolean),
+              gateResults: { reason: 'no_matching_opinion' },
+            });
+            unmatchedVerdicts++;
           }
+          continue;
+        }
 
+        // `new` and `reinforce` converge here. The LLM's own label does not
+        // decide which path runs — whether the belief matches an existing
+        // opinion does:
+        //   - a `new` verdict that matches becomes a reinforcement, so a
+        //     belief the model keeps re-deriving strengthens one row instead
+        //     of accumulating duplicates every cycle;
+        //   - a `reinforce` verdict that matches nothing is a fresh
+        //     proposition the model mislabelled, so it becomes a formation
+        //     candidate subject to the identical gates and counter-evidence
+        //     audit. It used to be journaled `no_matching_opinion` and
+        //     dropped, which silently discarded well-evidenced beliefs: on a
+        //     live store, 6 of 6 candidates in one cycle were unmatched
+        //     `reinforce` verdicts, so nothing reached the gates at all.
+        //     Adopting them lowers no bar — every threshold still applies.
+        const existing = findMatchingOpinion(
+          existingOps,
+          opUpdate.belief,
+          opUpdate.domain,
+        );
+        if (existing) {
+          reinforceExisting(existing, opUpdate, opIndex);
+          continue;
+        }
+
+        {
           // Formation gates (issue #38): a fresh belief must clear the
           // configured evidence thresholds, measured over verified evidence
           // unioned with any prior rejection of the same belief. When no
@@ -2178,58 +2233,6 @@ export async function reflect(config: ReflectConfig): Promise<ReflectResult> {
             contradicting: contradictingIds,
             gateResults,
           });
-        } else if (opUpdate.direction === 'reinforce') {
-          const existing = findMatchingOpinion(
-            existingOps,
-            opUpdate.belief,
-            opUpdate.domain,
-          );
-          if (existing) {
-            reinforceExisting(existing, opUpdate, opIndex);
-          } else {
-            // Previously a silent drop — the audit gap #38 exists to close.
-            journal('rejected', null, opUpdate, {
-              supporting: opUpdate.evidence_chunk_ids.filter(Boolean),
-              gateResults: { reason: 'no_matching_opinion' },
-            });
-            unmatchedVerdicts++;
-          }
-        } else if (opUpdate.direction === 'challenge') {
-          const existing = findMatchingOpinion(
-            existingOps,
-            opUpdate.belief,
-            opUpdate.domain,
-          );
-          if (existing) {
-            const clampedDelta = Math.max(
-              -0.15,
-              Math.min(0, opUpdate.confidence_delta),
-            );
-            const mergedContradicting = [
-              ...new Set([
-                ...existing.contradicting_chunks,
-                ...opUpdate.evidence_chunk_ids,
-              ]),
-            ];
-            challengeOpinion.run(
-              clampedDelta,
-              JSON.stringify(mergedContradicting),
-              now,
-              now,
-              existing.id,
-            );
-            result.opinionsChallenged++;
-            journal('challenged', existing.id, opUpdate, {
-              contradicting: opUpdate.evidence_chunk_ids.filter(Boolean),
-            });
-          } else {
-            // Previously a silent drop — the audit gap #38 exists to close.
-            journal('rejected', null, opUpdate, {
-              contradicting: opUpdate.evidence_chunk_ids.filter(Boolean),
-              gateResults: { reason: 'no_matching_opinion' },
-            });
-            unmatchedVerdicts++;
-          }
         }
       }
 
