@@ -193,6 +193,23 @@ async function seedWorkflow(
   return r.chunkId;
 }
 
+/**
+ * Fixture timestamps are anchored to the current date rather than written as
+ * literals. The suggestion scan's `initialLookbackDays` (default 30) is
+ * measured from `now`, so a hardcoded seed date silently drifts out of the
+ * scan window as time passes and the signal stops being found at all. This
+ * suite carried `2026-07-19` literals and began failing on 2026-08-18 —
+ * exactly 30 days later — with no code change behind it. Relative offsets
+ * keep the intent (recent signal inside the window, ordered across distinct
+ * days) true on any run date.
+ */
+function daysAgo(n: number): string {
+  return new Date(Date.now() - n * 86_400_000)
+    .toISOString()
+    .slice(0, 19)
+    .replace('T', ' ');
+}
+
 function backdateCreatedAt(
   path: string,
   chunkId: string,
@@ -288,7 +305,7 @@ describe('procedural suggestions (issue #39)', () => {
 
   it('2. forms a new suggestion from evidence that clears the gate, fully stamped', async () => {
     dbPath = tmpDbPath();
-    const corr = await seedCorrections(dbPath, 5, '2026-07-19 10:00:00', true);
+    const corr = await seedCorrections(dbPath, 5, daysAgo(2), true);
     const candidate = newSuggestion([
       corr[0].oldId,
       corr[1].oldId,
@@ -335,7 +352,7 @@ describe('procedural suggestions (issue #39)', () => {
 
   it('3. gates reject thin evidence, journaling the shortfall with default gate keys present', async () => {
     dbPath = tmpDbPath();
-    const corr = await seedCorrections(dbPath, 5, '2026-07-19 10:00:00', true);
+    const corr = await seedCorrections(dbPath, 5, daysAgo(2), true);
     const candidate = newSuggestion([corr[0].oldId, corr[1].oldId]); // only 2, default requires 3
     const { fetchFn, prompts } = mockFetchSequence([
       suggestResponse([candidate]),
@@ -371,7 +388,7 @@ describe('procedural suggestions (issue #39)', () => {
 
   it('4. hallucinated evidence ids do not count toward the gate', async () => {
     dbPath = tmpDbPath();
-    const corr = await seedCorrections(dbPath, 5, '2026-07-19 10:00:00', true);
+    const corr = await seedCorrections(dbPath, 5, daysAgo(2), true);
     const candidate = newSuggestion([
       corr[0].oldId,
       corr[1].oldId,
@@ -400,7 +417,7 @@ describe('procedural suggestions (issue #39)', () => {
 
   it('5. inactive (superseded) evidence still counts toward the gate — requireActive:false', async () => {
     dbPath = tmpDbPath();
-    const corr = await seedCorrections(dbPath, 5, '2026-07-19 10:00:00', true);
+    const corr = await seedCorrections(dbPath, 5, daysAgo(2), true);
     const citedIds = [corr[0].oldId, corr[1].oldId, corr[2].oldId];
     const candidate = newSuggestion(citedIds);
     const { fetchFn } = mockFetchSequence([suggestResponse([candidate])]);
@@ -432,12 +449,7 @@ describe('procedural suggestions (issue #39)', () => {
 
   it("6. a rejected candidate's evidence merges forward into a later cycle that re-derives it", async () => {
     dbPath = tmpDbPath();
-    const batchA = await seedCorrections(
-      dbPath,
-      5,
-      '2026-07-17 10:00:00',
-      true,
-    );
+    const batchA = await seedCorrections(dbPath, 5, daysAgo(4), true);
     const candidateA = newSuggestion([batchA[0].oldId, batchA[1].oldId]); // 2 < 3, rejected
     const first = mockFetchSequence([suggestResponse([candidateA])]);
     vi.stubGlobal('fetch', first.fetchFn);
@@ -452,12 +464,7 @@ describe('procedural suggestions (issue #39)', () => {
     });
     expect(resultA.suggestionsRejected).toBe(1);
 
-    const batchB = await seedCorrections(
-      dbPath,
-      5,
-      '2026-07-18 10:00:00',
-      false,
-    );
+    const batchB = await seedCorrections(dbPath, 5, daysAgo(3), false);
     // Same summary/domain as candidateA — findPriorSuggestionRejection must match.
     const candidateB = newSuggestion([batchB[0].oldId]);
     const second = mockFetchSequence([suggestResponse([candidateB])]);
@@ -483,12 +490,7 @@ describe('procedural suggestions (issue #39)', () => {
 
   it('7. cosine-matching candidate reinforces the existing suggestion instead of duplicating', async () => {
     dbPath = tmpDbPath();
-    const batchA = await seedCorrections(
-      dbPath,
-      5,
-      '2026-07-17 10:00:00',
-      true,
-    );
+    const batchA = await seedCorrections(dbPath, 5, daysAgo(4), true);
     const candidateA = newSuggestion([
       batchA[0].oldId,
       batchA[1].oldId,
@@ -509,12 +511,7 @@ describe('procedural suggestions (issue #39)', () => {
     expect(formed.embedding).not.toBeNull();
     expect(formed.last_reinforced).toBeNull();
 
-    const batchB = await seedCorrections(
-      dbPath,
-      5,
-      '2026-07-18 10:00:00',
-      false,
-    );
+    const batchB = await seedCorrections(dbPath, 5, daysAgo(3), false);
     const candidateB = newSuggestion([
       batchB[0].oldId,
       batchB[1].oldId,
@@ -545,12 +542,7 @@ describe('procedural suggestions (issue #39)', () => {
 
   it('8. without an embedder, dedup falls back to lexical similarity and warns', async () => {
     dbPath = tmpDbPath();
-    const batchA = await seedCorrections(
-      dbPath,
-      5,
-      '2026-07-17 10:00:00',
-      true,
-    );
+    const batchA = await seedCorrections(dbPath, 5, daysAgo(4), true);
     const candidateA = newSuggestion(
       [batchA[0].oldId, batchA[1].oldId, batchA[2].oldId],
       { summary: 'Always run the linter before committing any change' },
@@ -575,12 +567,7 @@ describe('procedural suggestions (issue #39)', () => {
     expect(formed.embedding).toBeNull();
     warnSpy.mockClear();
 
-    const batchB = await seedCorrections(
-      dbPath,
-      5,
-      '2026-07-18 10:00:00',
-      false,
-    );
+    const batchB = await seedCorrections(dbPath, 5, daysAgo(3), false);
     const candidateB = newSuggestion(
       [batchB[0].oldId, batchB[1].oldId, batchB[2].oldId],
       { summary: 'Always run the linter before committing any new change' }, // near-identical
@@ -603,12 +590,7 @@ describe('procedural suggestions (issue #39)', () => {
 
   it('9. a dismissed suggestion is reopened only when materially new evidence arrives', async () => {
     dbPath = tmpDbPath();
-    const batchA = await seedCorrections(
-      dbPath,
-      5,
-      '2026-07-16 10:00:00',
-      true,
-    );
+    const batchA = await seedCorrections(dbPath, 5, daysAgo(5), true);
     const candidateA = newSuggestion([
       batchA[0].oldId,
       batchA[1].oldId,
@@ -628,12 +610,7 @@ describe('procedural suggestions (issue #39)', () => {
     markDismissed(dbPath, formed.id);
 
     // Cycle B: 2 known + 1 new — not enough net-new evidence to reopen.
-    const batchB = await seedCorrections(
-      dbPath,
-      5,
-      '2026-07-17 10:00:00',
-      false,
-    );
+    const batchB = await seedCorrections(dbPath, 5, daysAgo(4), false);
     const candidateB = newSuggestion([
       batchA[0].oldId,
       batchA[1].oldId,
@@ -664,12 +641,7 @@ describe('procedural suggestions (issue #39)', () => {
     expect(gateResultsB.knownEvidence).toBe(3);
 
     // Cycle C: 3 brand-new ids — enough net-new evidence to reopen.
-    const batchC = await seedCorrections(
-      dbPath,
-      5,
-      '2026-07-18 10:00:00',
-      false,
-    );
+    const batchC = await seedCorrections(dbPath, 5, daysAgo(3), false);
     const candidateC = newSuggestion([
       batchC[0].oldId,
       batchC[1].oldId,
@@ -698,7 +670,7 @@ describe('procedural suggestions (issue #39)', () => {
 
   it('10a. a parsed-empty suggestion output advances the watermark (next cycle scans nothing new)', async () => {
     dbPath = tmpDbPath();
-    await seedCorrections(dbPath, 5, '2026-07-19 10:00:00', true);
+    await seedCorrections(dbPath, 5, daysAgo(2), true);
     const { fetchFn, prompts } = mockFetchSequence([suggestResponse([])]);
     vi.stubGlobal('fetch', fetchFn);
 
@@ -713,9 +685,7 @@ describe('procedural suggestions (issue #39)', () => {
     expect(prompts).toHaveLength(1);
     expect(result.suggestionsProposed).toBe(0);
     expect(result.status).toBe('completed');
-    expect(getBankConfigValue(dbPath, 'suggest_watermark')).toBe(
-      '2026-07-19 10:00:00',
-    );
+    expect(getBankConfigValue(dbPath, 'suggest_watermark')).toBe(daysAgo(2));
 
     // Cycle 2: the same 5 corrections are now before the advanced watermark —
     // nothing new to scan, so the pass makes no LLM call at all.
@@ -735,7 +705,7 @@ describe('procedural suggestions (issue #39)', () => {
 
   it('10b. malformed suggestion output leaves the watermark untouched and does not block opinion/observation insights', async () => {
     dbPath = tmpDbPath();
-    await seedCorrections(dbPath, 5, '2026-07-19 10:00:00', true);
+    await seedCorrections(dbPath, 5, daysAgo(2), true);
     await seedWorldFacts(dbPath, 5, false);
 
     const first = mockFetchSequence([
@@ -792,14 +762,12 @@ describe('procedural suggestions (issue #39)', () => {
       'Ran the full test suite before opening the PR, as usual',
       false,
     );
-    const corr = await seedCorrections(dbPath, 3, '2026-07-19 10:00:00', false);
+    const corr = await seedCorrections(dbPath, 3, daysAgo(2), false);
     const [forgottenId] = await seedWorldFacts(dbPath, 1, false);
     const forgetDb = new Database(dbPath);
     forgetDb
-      .prepare(
-        `UPDATE chunks SET is_active = 0, updated_at = '2026-07-19 10:00:00' WHERE id = ?`,
-      )
-      .run(forgottenId);
+      .prepare(`UPDATE chunks SET is_active = 0, updated_at = ? WHERE id = ?`)
+      .run(daysAgo(2), forgottenId);
     forgetDb.close();
 
     const taskId = insertTaskScopeChunk(
@@ -812,7 +780,7 @@ describe('procedural suggestions (issue #39)', () => {
       'This tool result predates the suggestion watermark',
       false,
     );
-    backdateCreatedAt(dbPath, preWatermarkId, '2026-06-01 10:00:00');
+    backdateCreatedAt(dbPath, preWatermarkId, daysAgo(60));
 
     const { fetchFn, prompts } = mockFetchSequence([suggestResponse([])]);
     vi.stubGlobal('fetch', fetchFn);
@@ -847,7 +815,7 @@ describe('procedural suggestions (issue #39)', () => {
 
   it('12. suggestions never surface via recall() or groundSubagent() — structural isolation', async () => {
     dbPath = tmpDbPath();
-    const corr = await seedCorrections(dbPath, 5, '2026-07-19 10:00:00', true);
+    const corr = await seedCorrections(dbPath, 5, daysAgo(2), true);
     const distinctToken = 'ZarquonFlangeProtocol';
     const candidate = newSuggestion(
       [corr[0].oldId, corr[1].oldId, corr[2].oldId],
@@ -894,18 +862,8 @@ describe('procedural suggestions (issue #39)', () => {
   it('13. reflectCatchUp sums suggestion counters across multiple inner reflect() batches', async () => {
     dbPath = tmpDbPath();
     await seedWorldFacts(dbPath, 12, true);
-    const batch1 = await seedCorrections(
-      dbPath,
-      5,
-      '2026-07-17 10:00:00',
-      false,
-    );
-    const batch2 = await seedCorrections(
-      dbPath,
-      5,
-      '2026-07-18 10:00:00',
-      false,
-    );
+    const batch1 = await seedCorrections(dbPath, 5, daysAgo(4), false);
+    const batch2 = await seedCorrections(dbPath, 5, daysAgo(3), false);
 
     const candidateA = newSuggestion([batch1[0].oldId, batch1[1].oldId], {
       summary: 'Rule A: always double-check script paths after a correction',
